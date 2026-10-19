@@ -1,18 +1,6 @@
 /** Measurement-based fit analysis (all units cm). */
 import type { BodyMeasurements } from './body';
 
-export interface Garment {
-  name: string;
-  /** Flat garment circumferences (full circumference, not half-width). */
-  chest: number;
-  waist: number;
-  hem: number;
-  /** Garment length shoulder-to-hem. */
-  length: number;
-  /** Fabric stretch: fraction the cloth may extend comfortably (0.05 = 5%). */
-  stretch: number;
-}
-
 export type Verdict = 'too tight' | 'snug' | 'regular' | 'loose' | 'too loose';
 
 export interface RegionFit {
@@ -21,6 +9,15 @@ export interface RegionFit {
   garment: number;
   ease: number;
   verdict: Verdict;
+}
+
+/** Garment circumferences measured from the flat pattern (null where the garment does not cover that height). */
+export interface GarmentMeasure {
+  chest: number | null;
+  waist: number | null;
+  hip: number | null;
+  /** Fabric stretch: fraction the cloth may extend comfortably (0.05 = 5%). */
+  stretch: number;
 }
 
 export function classify(ease: number, stretch: number, bodyCirc: number): Verdict {
@@ -33,43 +30,32 @@ export function classify(ease: number, stretch: number, bodyCirc: number): Verdi
   return 'too loose';
 }
 
-export function analyseFit(body: BodyMeasurements, g: Garment): RegionFit[] {
-  const rows: [RegionFit['region'], number, number][] = [
+export function analyseFit(body: BodyMeasurements, g: GarmentMeasure): RegionFit[] {
+  const rows: [RegionFit['region'], number, number | null][] = [
     ['chest', body.chest, g.chest],
     ['waist', body.waist, g.waist],
-    ['hip', body.hip, g.hem],
+    ['hip', body.hip, g.hip],
   ];
-  return rows.map(([region, b, gc]) => {
+  const out: RegionFit[] = [];
+  for (const [region, b, gc] of rows) {
+    if (gc === null) continue;
     const ease = gc - b;
-    return { region, body: b, garment: gc, ease, verdict: classify(ease, g.stretch, b) };
-  });
+    out.push({ region, body: b, garment: gc, ease, verdict: classify(ease, g.stretch, b) });
+  }
+  return out;
 }
 
-const PENALTY: Record<Verdict, number> = {
-  'too tight': 10,
-  snug: 1,
-  regular: 0,
-  loose: 1.5,
-  'too loose': 6,
-};
+export const FABRICS = {
+  woven: { label: 'Woven (cotton, denim)', stretch: 0.03, stiffness: 1, bend: 0.3 },
+  knit: { label: 'Knit (jersey, sweater)', stretch: 0.12, stiffness: 0.7, bend: 0.12 },
+  elastic: { label: 'Very stretchy (lycra)', stretch: 0.3, stiffness: 0.4, bend: 0.08 },
+} as const;
+export type FabricId = keyof typeof FABRICS;
 
-export function fitScore(body: BodyMeasurements, g: Garment): number {
-  const fits = analyseFit(body, g);
-  const pen = fits.reduce((s, f) => s + PENALTY[f.verdict] + Math.abs(f.ease - 8) * 0.02, 0);
-  return Math.max(0, Math.round(100 - pen * 5));
-}
-
-/** Standard size chart: garment measurements for a regular-fit shirt. */
-export const SIZE_CHART: Garment[] = [
-  { name: 'S', chest: 94, waist: 90, hem: 94, length: 68, stretch: 0.05 },
-  { name: 'M', chest: 102, waist: 98, hem: 102, length: 70, stretch: 0.05 },
-  { name: 'L', chest: 110, waist: 106, hem: 110, length: 72, stretch: 0.05 },
-  { name: 'XL', chest: 118, waist: 114, hem: 118, length: 74, stretch: 0.05 },
-  { name: 'XXL', chest: 126, waist: 122, hem: 126, length: 76, stretch: 0.05 },
+export const SIZES = [
+  { name: 'S', scale: 0.93 },
+  { name: 'M', scale: 1 },
+  { name: 'L', scale: 1.07 },
+  { name: 'XL', scale: 1.14 },
+  { name: 'XXL', scale: 1.21 },
 ];
-
-export function recommendSize(body: BodyMeasurements, chart: Garment[] = SIZE_CHART) {
-  const scored = chart.map((g) => ({ garment: g, score: fitScore(body, g) }));
-  scored.sort((x, y) => y.score - x.score);
-  return scored;
-}

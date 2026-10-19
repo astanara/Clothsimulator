@@ -19,9 +19,11 @@
   },
   "homepage": "https://github.com/astanara/Clothsimulator#readme",
   "dependencies": {
+    "delaunator": "^5.1.0",
     "three": "^0.186.1"
   },
   "devDependencies": {
+    "@types/delaunator": "^5.0.3",
     "@types/three": "^0.186.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
