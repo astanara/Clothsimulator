@@ -28,6 +28,14 @@
     #legend { position: absolute; left: 16px; bottom: 16px; font-size: 12px; color: #c4c9d6; display: none; }
     #legend i { display: inline-block; width: 160px; height: 10px; vertical-align: middle; margin: 0 6px; border-radius: 5px;
       background: linear-gradient(90deg, #3b82f6, #e5e7eb, #ef4444); }
+    .row { display: flex; gap: 8px; } .row button { margin-top: 6px; }
+    label.check { display: flex; gap: 8px; align-items: center; grid-template-columns: none; font-size: 12px; color: #c4c9d6; }
+    #slots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .slot { background: #2a2e38; border-radius: 6px; padding: 6px; font-size: 12px; position: relative; }
+    .slot b { display: block; margin-bottom: 4px; }
+    .slot canvas { width: 100%; height: 72px; background: #1d2027; border-radius: 4px; object-fit: contain; }
+    .slot input { font-size: 11px; width: 100%; margin-top: 4px; }
+    .slot .x { position: absolute; top: 4px; right: 4px; width: 22px; padding: 0 0 2px; margin: 0; line-height: 1; }
     #status { position: absolute; left: 16px; top: 12px; font-size: 12px; color: #c4c9d6; }
   </style>
 </head>
@@ -35,10 +43,11 @@
   <div id="app">
     <div id="panel">
       <h1>Cloth Simulator</h1>
-      <h2>Garment photo</h2>
+      <h2>Garment photos</h2>
       <select id="sample"></select>
-      <input type="file" id="file" accept="image/*" />
-      <p class="hint">Use a flat-lay or front-on photo on a plain background, or a cut-out PNG with transparency.</p>
+      <div id="slots"></div>
+      <label class="check"><input type="checkbox" id="sideflip" /> Side photo: wearer faces right</label>
+      <p class="hint">Front or flat-lay is required (the flat-lay gives the truest shape). Back adds the rear texture, side is projected onto the sleeves and side seams. Plain background or cut-out PNGs work best.</p>
       <label class="wide">Type<select id="preset"></select></label>
       <label class="wide">Length (cm)<input type="number" id="length" min="20" max="200" step="1" /></label>
       <label class="wide">Size<select id="size"></select></label>
@@ -49,7 +58,17 @@
       <canvas id="editor" width="576" height="576"></canvas>
       <p class="hint"><b style="color:#4ade80">Green</b> = sewn seam, <b style="color:#f87171">red</b> = opening (hem, neck, cuffs, waist).
         Drag on the outline to repaint; click the first time to choose paint or erase.</p>
-      <h2>Body (cm)</h2>
+      <h2>Body</h2>
+      <div class="row">
+        <button id="scan-btn">Load body scan…</button>
+        <button id="scan-demo">Demo scan</button>
+      </div>
+      <input type="file" id="scan-file" accept=".obj,.glb,.gltf,.ply,.stl" hidden />
+      <div class="row" id="scan-tools" style="display:none">
+        <button id="scan-rot">Rotate 90°</button>
+        <button id="scan-param">Parametric body</button>
+      </div>
+      <p class="hint" id="body-note">Parametric body from measurements. Or load a scan (OBJ, GLB, PLY, STL): it is scaled to your height and measured automatically.</p>
       <div id="body-controls"></div>
       <h2>View</h2>
       <select id="mode">

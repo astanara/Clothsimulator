@@ -11,6 +11,8 @@ export interface SampleDef {
   /** Outline in a 400x400 canvas. */
   outline: Pt[];
   decorate: (ctx: CanvasRenderingContext2D) => void;
+  /** Pattern on the back of the garment (defaults to a plain back). */
+  decorateBack?: (ctx: CanvasRenderingContext2D) => void;
 }
 
 const mirror = (half: Pt[]): Pt[] => [...half, ...half.map(([x, y]) => [400 - x, y] as Pt).reverse()];
@@ -18,6 +20,14 @@ const mirror = (half: Pt[]): Pt[] => [...half, ...half.map(([x, y]) => [400 - x,
 export const SAMPLES: SampleDef[] = [
   {
     id: 'tshirt',
+    decorateBack(ctx) {
+      ctx.fillStyle = '#f6f1e7';
+      ctx.fillRect(100, 150, 200, 10);
+      ctx.fillStyle = '#1d2b53';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('FIT CLUB', 200, 215);
+    },
     label: 'Sample: striped t-shirt',
     preset: 'top',
     color: '#d9534f',
@@ -49,15 +59,21 @@ export const SAMPLES: SampleDef[] = [
   },
   {
     id: 'pants',
+    decorateBack(ctx) {
+      ctx.strokeStyle = '#e0b66a';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(138, 110, 50, 56);
+      ctx.strokeRect(212, 110, 50, 56);
+    },
     label: 'Sample: jeans',
     preset: 'pants',
     color: '#2f4a7d',
     outline: mirror([
       [200, 40],
       [200, 190],
-      [176, 378],
-      [136, 382],
-      [124, 150],
+      [177, 378],
+      [118, 382],
+      [113, 150],
       [130, 40],
     ]),
     decorate(ctx) {
@@ -77,6 +93,14 @@ export const SAMPLES: SampleDef[] = [
   },
   {
     id: 'dress',
+    decorateBack(ctx) {
+      ctx.fillStyle = '#f4c2d7';
+      for (let i = 0; i < 20; i++) {
+        ctx.beginPath();
+        ctx.arc(80 + ((i * 71) % 240), 60 + ((i * 47) % 300), 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    },
     label: 'Sample: floral dress',
     preset: 'sleeveless',
     color: '#8e5ea2',
@@ -132,7 +156,7 @@ export const SAMPLES: SampleDef[] = [
   },
 ];
 
-export function drawSample(def: SampleDef, size = 400): HTMLCanvasElement {
+export function drawSample(def: SampleDef, size = 400, view: 'front' | 'back' = 'front'): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const ctx = c.getContext('2d')!;
@@ -146,7 +170,13 @@ export function drawSample(def: SampleDef, size = 400): HTMLCanvasElement {
   ctx.fillStyle = def.color;
   ctx.fill();
   ctx.clip();
-  def.decorate(ctx);
+  if (view === 'back') {
+    ctx.fillStyle = 'rgba(0,0,0,0.12)';
+    ctx.fillRect(0, 0, 400, 400);
+    def.decorateBack?.(ctx);
+  } else {
+    def.decorate(ctx);
+  }
   ctx.restore();
   ctx.strokeStyle = 'rgba(0,0,0,0.25)';
   ctx.lineWidth = 2;

@@ -5,14 +5,14 @@
  * particles along sewn outline points ("seams") and are separate at openings (hem, neck, cuffs...).
  * Rest lengths come from the flat pattern, so a garment that is too small ends up stretched.
  */
-import type { Body } from './body';
+import type { BodyModel } from './body';
 import type { Pattern } from './garment/pattern';
 
 const THICKNESS = 0.008;
 const START_BULGE = 0.16;
 
 export interface ClothParams {
-  body: Body;
+  body: BodyModel;
   pattern: Pattern;
   /** 1 = open (hem, neck, ...), per pattern.boundary entry. */
   openings: Uint8Array;
@@ -24,6 +24,11 @@ export interface ClothParams {
   stiffness: number;
   /** Resistance to sharp folds 0..1. */
   bend: number;
+  /**
+   * Swing the sleeves about the shoulder joints by `deltaDeg` in the initial layout, so a flat-lay
+   * garment whose sleeves point one way can be put on a body whose arms point another.
+   */
+  sleeveWarp?: { torsoHalf: number; jointX: number; jointY: number; deltaDeg: number };
 }
 
 export class Cloth {
@@ -40,13 +45,15 @@ export class Cloth {
   private readonly structural: Uint8Array;
   /** Render vertices: front panel then back panel, mapped onto particles. */
   readonly renderMap: Int32Array;
-  readonly uv: Float32Array;
+  /** Triangle indices: the front panel's triangles first, then the back panel's. */
   readonly indices: Uint32Array;
+  /** Number of indices belonging to the front panel. */
+  readonly frontIndexCount: number;
   readonly strain: Float32Array;
   /** Distance from each particle to the body surface (m). */
   readonly gap: Float32Array;
 
-  private readonly body: Body;
+  private readonly body: BodyModel;
 
   constructor(p: ClothParams) {
     this.body = p.body;
@@ -67,8 +74,30 @@ export class Cloth {
     for (let i = 0; i < N; i++) back[i] = seam[i] ? front[i] : m++;
     this.count = m;
 
-    const px = (i: number) => (pattern.pts[i * 2] - cx) * s;
-    const py = (i: number) => p.topY - (pattern.pts[i * 2 + 1] - pattern.bbox.minY) * s;
+    const flatX = (i: number) => (pattern.pts[i * 2] - cx) * s;
+    const flatY = (i: number) => p.topY - (pattern.pts[i * 2 + 1] - pattern.bbox.minY) * s;
+    const warped = new Float32Array(N * 2);
+    for (let i = 0; i < N; i++) {
+      warped[i * 2] = flatX(i);
+      warped[i * 2 + 1] = flatY(i);
+      if (p.sleeveWarp) {
+        const { torsoHalf, jointX, jointY, deltaDeg } = p.sleeveWarp;
+        const x = flatX(i);
+        const sign = x < 0 ? -1 : 1;
+        const t = Math.min(1, Math.max(0, (Math.abs(x) - torsoHalf * 0.9) / 0.08));
+        const w = t * t * (3 - 2 * t);
+        if (w > 0) {
+          const u = Math.abs(x) - jointX;
+          const v = flatY(i) - jointY;
+          const r = Math.hypot(u, v);
+          const a = Math.atan2(u, -v) + (w * deltaDeg * Math.PI) / 180;
+          warped[i * 2] = sign * (jointX + r * Math.sin(a));
+          warped[i * 2 + 1] = jointY - r * Math.cos(a);
+        }
+      }
+    }
+    const px = (i: number) => warped[i * 2];
+    const py = (i: number) => warped[i * 2 + 1];
 
     // Start shape: sheets bulging away from the seams so nothing begins inside the body.
     const seamIdx: number[] = [];
@@ -86,15 +115,26 @@ export class Cloth {
         this.pos[k * 3 + 2] = sign * z;
       }
     }
+    // Resolve the initial overlap with the body. Front/back panel points are walked straight out
+    // along their own side (+z / -z) so they can never end up on the wrong side of a limb;
+    // seam points sit on the sides and are pushed out along the body's surface normal.
     const tmp = { x: 0, y: 0, z: 0 };
-    for (let k = 0; k < m; k++) {
-      tmp.x = this.pos[k * 3];
-      tmp.y = this.pos[k * 3 + 1];
-      tmp.z = this.pos[k * 3 + 2];
-      p.body.collide(tmp, THICKNESS * 2);
-      this.pos[k * 3] = tmp.x;
-      this.pos[k * 3 + 1] = tmp.y;
-      this.pos[k * 3 + 2] = tmp.z;
+    const margin = THICKNESS * 2;
+    for (let i = 0; i < N; i++) {
+      for (const [k, sign] of [[front[i], 1], [back[i], -1]] as const) {
+        tmp.x = this.pos[k * 3];
+        tmp.y = this.pos[k * 3 + 1];
+        tmp.z = this.pos[k * 3 + 2];
+        if (seam[i]) {
+          p.body.collide(tmp, margin);
+        } else {
+          for (let n = 0; n < 120 && p.body.distance(tmp.x, tmp.y, tmp.z) < margin; n++) tmp.z += sign * 0.004;
+          p.body.collide(tmp, 0); // floor only
+        }
+        this.pos[k * 3] = tmp.x;
+        this.pos[k * 3 + 1] = tmp.y;
+        this.pos[k * 3 + 2] = tmp.z;
+      }
     }
     this.prev = Float32Array.from(this.pos);
 
@@ -127,7 +167,7 @@ export class Cloth {
       stiff.push(k);
       structural.push(st);
     };
-    const flat = (a: number, b: number) => Math.hypot(px(a) - px(b), py(a) - py(b));
+    const flat = (a: number, b: number) => Math.hypot(flatX(a) - flatX(b), flatY(a) - flatY(b));
     for (const panel of [front, back]) {
       const opp = new Map<number, number[]>();
       for (let t = 0; t < pattern.tris.length; t += 3) {
@@ -155,21 +195,18 @@ export class Cloth {
 
     // Render mesh (front + back copies so each panel can carry its own UVs / normals).
     this.renderMap = new Int32Array(N * 2);
-    this.uv = new Float32Array(N * 4);
     for (let i = 0; i < N; i++) {
       this.renderMap[i] = front[i];
       this.renderMap[N + i] = back[i];
-      const u = pattern.pts[i * 2] / pattern.w;
-      const v = 1 - pattern.pts[i * 2 + 1] / pattern.h;
-      this.uv.set([u, v], i * 2);
-      this.uv.set([u, v], (N + i) * 2);
     }
     const idx: number[] = [];
+    for (let t = 0; t < pattern.tris.length; t += 3) idx.push(pattern.tris[t], pattern.tris[t + 1], pattern.tris[t + 2]);
+    this.frontIndexCount = idx.length;
     for (let t = 0; t < pattern.tris.length; t += 3) {
       const a = pattern.tris[t];
       const b = pattern.tris[t + 1];
       const c = pattern.tris[t + 2];
-      idx.push(a, b, c, N + a, N + c, N + b);
+      idx.push(N + a, N + c, N + b);
     }
     this.indices = Uint32Array.from(idx);
     this.strain = new Float32Array(m).fill(1);
@@ -190,7 +227,7 @@ export class Cloth {
         prev[k + c] = pos[k + c];
         pos[k + c] += v + (c === 1 ? g : 0);
       }
-      if (!Number.isNaN(pinY[i])) {
+      if (!Number.isNaN(pinY[i]) && pos[k + 1] < pinY[i]) {
         pos[k + 1] = pinY[i];
         prev[k + 1] = pinY[i];
       }
@@ -215,7 +252,8 @@ export class Cloth {
       }
       for (let i = 0; i < this.count; i++) {
         const k = i * 3;
-        if (!Number.isNaN(pinY[i])) pos[k + 1] = pinY[i];
+        // held edges may rest higher (on the shoulders) but not sag below their line
+        if (!Number.isNaN(pinY[i]) && pos[k + 1] < pinY[i]) pos[k + 1] = pinY[i];
         tmp.x = pos[k];
         tmp.y = pos[k + 1];
         tmp.z = pos[k + 2];
@@ -258,6 +296,6 @@ export class Cloth {
 }
 
 /** World y of the garment's top edge for a preset anchor. */
-export function anchorToY(body: Body, anchor: number, offsetCm: number): number {
+export function anchorToY(body: BodyModel, anchor: number, offsetCm: number): number {
   return anchor * body.height + offsetCm / 100;
 }

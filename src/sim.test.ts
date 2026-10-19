@@ -7,6 +7,7 @@ import { buildPattern } from './garment/pattern';
 import { autoOpenings, getPreset } from './garment/presets';
 import { segment } from './image/segment';
 import { SAMPLES, rasteriseOutline } from './samples';
+import { alignMask, applyAffine } from './garment/align';
 
 describe('body', () => {
   it('reproduces requested circumference', () => {
@@ -124,5 +125,39 @@ describe('cloth drape', () => {
     const m = measureGarment(pattern, body, s, preset.anchor * body.height, 0.03, true);
     expect(m.chest).toBeGreaterThan(80);
     expect(m.chest).toBeLessThan(130);
+  });
+});
+
+describe('photo registration', () => {
+  const rect = (w: number, h: number, x0: number, y0: number, x1: number, y1: number, notch = false) => {
+    const mask = new Uint8Array(w * h);
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        // an asymmetric bite out of the top-left corner makes mirroring detectable
+        if (notch && x < x0 + (x1 - x0) * 0.3 && y < y0 + (y1 - y0) * 0.3) continue;
+        mask[y * w + x] = 1;
+      }
+    return { mask, w, h };
+  };
+  it('finds scale and offset between a pattern and a photo of the same garment', () => {
+    const pat = rect(200, 200, 40, 30, 160, 170, true);
+    const photo = rect(400, 300, 100, 60, 340, 250, true);
+    const { transform, iou } = alignMask(pat, photo, false);
+    expect(iou).toBeGreaterThan(0.93);
+    const [x, y] = applyAffine(transform, 100, 100); // pattern centre
+    expect(x).toBeCloseTo(220, -1);
+    expect(y).toBeCloseTo(155, -1);
+  });
+  it('detects a mirrored (back) view', () => {
+    const pat = rect(200, 200, 40, 30, 160, 170, true);
+    const mirrored = rect(200, 200, 40, 30, 160, 170, true);
+    for (let y = 0; y < 200; y++) {
+      const row = mirrored.mask.slice(y * 200, y * 200 + 200).reverse();
+      mirrored.mask.set(row, y * 200);
+    }
+    const auto = alignMask(pat, mirrored, 'auto');
+    expect(auto.transform.m).toBe(-1);
+    expect(auto.iou).toBeGreaterThan(0.9);
+    expect(alignMask(pat, mirrored, false).iou).toBeLessThan(auto.iou);
   });
 });

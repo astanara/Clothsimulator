@@ -56,7 +56,16 @@ export const LANDMARKS = {
   neck: 0.86,
 };
 
-export class Body {
+/** What the cloth needs from a body: collision and distance queries. Implemented by the parametric body and by scans. */
+export interface BodyModel {
+  readonly height: number;
+  /** Push a point out of the body (and above the floor). Returns true if it was moved. */
+  collide(p: { x: number; y: number; z: number }, margin: number): boolean;
+  /** Distance from a point to the body surface (negative = inside). */
+  distance(x: number, y: number, z: number): number;
+}
+
+export class Body implements BodyModel {
   readonly sections: Section[];
   readonly capsules: Capsule[] = [];
   readonly height: number;

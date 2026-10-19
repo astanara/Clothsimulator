@@ -1,16 +1,6 @@
 # Cloth Simulator
 
-Browser-based simulator that drapes a garment from a **photo** onto a parametric body, so you can see how it fits.
-
-## How a photo becomes a garment
-1. **Cut-out** (`src/image/segment.ts`): separates the garment from the backdrop. Uses the alpha channel of cut-out PNGs, otherwise the colour distance to the backdrop colour (auto-threshold, hole filling, gap closing for striped/patterned items). A slider lets you adjust it.
-2. **Pattern mesh** (`src/garment/pattern.ts`): traces the outline, then triangulates the garment (Delaunay over the outline plus an interior grid). The 2D triangle mesh is the garment's flat sewing pattern.
-3. **Panels and seams** (`src/cloth.ts`): the pattern is used as a front and a back panel. Outline points are either *sewn seams* (front and back share them: sides, shoulders, inseam) or *openings* (hem, neck, cuffs, waist). Garment type presets choose them automatically (`src/garment/presets.ts`); you can repaint them by dragging on the outline in the 2D editor.
-4. **Drape**: position-based-dynamics cloth with stretch, shear, bend, body collision (torso, arms, legs, head, floor) and friction. Rest lengths come from the flat pattern at the real-world scale you give (garment length in cm × size), so a garment that is too small is stretched.
-5. **Photo on the mesh**: each vertex keeps its pixel position as a UV coordinate, so the original photo (prints, stripes, wrinkles) is texture-mapped onto the draped mesh. The back panel reuses the front photo, slightly darker.
-6. **Fit**: ease at chest/waist/hip measured from the pattern against the body, plus a fabric-tension or gap-to-body heatmap.
-
-Garment types: tops with sleeves, sleeveless tops/dresses, trousers/shorts, skirts, and a custom mode.
+Browser-based simulator that drapes a garment from **photos** onto a parametric body or a **3D body scan**, so you can see how it fits.
 
 ```
 npm install
@@ -19,12 +9,36 @@ npm test
 npm run build
 ```
 
-## Photo tips
-Flat-lay or ghost-mannequin front view, garment fully visible, plain contrasting background, sleeves laid out. A cut-out PNG with a transparent background is the most reliable.
+## Photos
+Up to four photos per garment (plain background, or cut-out PNGs):
+
+| Slot | Used for |
+|---|---|
+| **Flat-lay (unworn)** | The garment's true outline, so the sewing pattern. Preferred over *Front* for the shape. |
+| **Front** | Texture of the front panel. If a flat-lay is also given, the front photo is registered onto the flat pattern (silhouette overlap fit) and used as the texture. |
+| **Back** | Texture of the back panel. Registered as a mirror image of the pattern (auto-detected). Without it, the back is a darker copy of the front. |
+| **Side** | Projected from the left/right onto surfaces that face sideways (sleeves, side seams). Tick *wearer faces right* if the front is on the right of the photo. Only garment pixels are projected. |
+
+## How a photo becomes a garment
+1. **Cut-out** (`src/image/segment.ts`): separates the garment from the backdrop (alpha channel, or colour distance to the backdrop with an automatic threshold, hole filling and gap closing for striped/patterned items).
+2. **Pattern mesh** (`src/garment/pattern.ts`): traces the outline and triangulates the garment into a flat 2D sewing pattern.
+3. **Registration** (`src/garment/align.ts`): front/back/side photos are fitted onto the pattern so each panel gets its own texture coordinates.
+4. **Panels and seams** (`src/cloth.ts`): the pattern is a front and a back panel. Outline points are *sewn seams* (shared by both panels) or *openings* (hem, neck, cuffs, waist), chosen by the garment type preset (`src/garment/presets.ts`) and editable by painting on the 2D outline.
+5. **Drape**: position-based-dynamics cloth with stretch, shear, bend, body collision and friction. Rest lengths come from the flat pattern at the real-world scale you give (length in cm x size), so a too-small garment is stretched.
+6. **Fit**: ease at chest/waist/hip from the pattern against the body, plus tension and gap-to-body heatmaps.
+
+Garment types: tops with sleeves, sleeveless tops/dresses, trousers/shorts, skirts, and a custom mode.
+
+## Body scans
+Load an OBJ, GLB/GLTF, PLY or STL (or try *Demo scan*). Code in `src/scan/`:
+- **Normalise** (`normalize.ts`): finds the up axis (Z-up scans are fixed), the facing direction (toes point forward), scales to the height you enter and puts the feet on the floor. *Rotate 90°* fixes a wrong guess.
+- **Collision** (`sdf.ts`): the mesh is voxelised (~0.9 cm) into a signed distance field (exact Euclidean distance transform) and the cloth collides against it. Watertight meshes work best; meshes with holes still collide (as a thin shell).
+- **Measure** (`scanBody.ts`): chest/waist/hip/shoulder width are read from horizontal slices (tape measure = convex hull); arm angle, crotch and shoulder line are detected. The numbers fill the sliders, can be corrected, and feed the fit report.
+- For skirts, dresses and long tops the gap between the legs is closed so the garment hangs from the hips. Sleeves of a flat-lay top are swung to match the scan's arm pose.
 
 ## Limitations / roadmap
-- One 2D photo cannot reveal the back or the 3D shape; the back is the mirrored front texture. A second (back) photo is a planned addition.
-- Garments with front openings (jackets, cardigans), layered or very voluminous items (coats, gowns) and hats/shoes are not modelled; no cloth self-collision yet.
-- Segmentation is colour based. For white-on-white or busy backgrounds use a cut-out PNG, or plug in an ML matting model (e.g. rembg / SAM) in `segment.ts`.
-- Body is a parametric stack of ellipses + capsules; next: SMPL / OBJ / GLB body loading with mesh collision.
-- Fit analysis assumes a flat-lay tube (2 × flat width); stretch/stiffness are presets rather than measured fabric properties.
+- Photos must show the garment alone (flat, on a hanger or ghost mannequin). Photos of garments worn by a person would need a clothing-segmentation model to remove the person.
+- The side photo is a projected texture; it does not change the garment's shape. The back panel reuses the front outline (no different back neckline yet).
+- Garments with front openings (jackets, cardigans), voluminous or layered items, hats and shoes are not modelled; no cloth self-collision yet.
+- Segmentation is colour based. For white-on-white or busy backgrounds use a cut-out PNG, or plug in an ML matting model in `segment.ts`.
+- Scan measurement uses fixed height bands and assumes a standing pose with the arms away from the torso. Fit analysis assumes a flat-lay tube (2 x flat width). Stretch and stiffness are fabric presets.

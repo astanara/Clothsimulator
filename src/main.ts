@@ -1,13 +1,18 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Body, BodyMeasurements, DEFAULT_BODY, LANDMARKS } from './body';
+import { Affine, alignMask, applyAffine } from './garment/align';
+import { Body, BodyMeasurements, BodyModel, DEFAULT_BODY, LANDMARKS } from './body';
 import { Cloth } from './cloth';
 import { FABRICS, FabricId, SIZES, analyseFit } from './fit';
-import { measureGarment } from './garment/measure';
+import { measureGarment, torsoHalfWidth } from './garment/measure';
 import { Pattern, buildPattern } from './garment/pattern';
 import { PRESETS, PresetId, autoOpenings, estimateArmAngle, getPreset } from './garment/presets';
 import { segment } from './image/segment';
 import { SAMPLES, drawSample } from './samples';
+import { demoScanMesh } from './scan/demoScan';
+import { loadScanFile } from './scan/load';
+import { NormalizedScan, RawMesh, normalizeScan, toSoup } from './scan/normalize';
+import { ScanData } from './scan/scanBody';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -41,14 +46,90 @@ const st = {
   arm: 30,
   mode: 'photo' as 'photo' | 'strain' | 'gap',
 };
+type Slot = 'front' | 'back' | 'side' | 'flat';
+const SLOTS: [Slot, string][] = [
+  ['front', 'Front'],
+  ['back', 'Back'],
+  ['side', 'Side'],
+  ['flat', 'Flat-lay (unworn)'],
+];
+interface Photo {
+  canvas: HTMLCanvasElement;
+  w: number;
+  h: number;
+  mask: Uint8Array;
+}
+const canvases: Partial<Record<Slot, HTMLCanvasElement>> = {};
+let photos: Partial<Record<Slot, Photo>> = {};
+let srcPhoto: Photo | null = null;
 let srcCanvas: HTMLCanvasElement = document.createElement('canvas');
+let uvFront: Float32Array = new Float32Array(0);
+let uvBack: Float32Array = new Float32Array(0);
+let hasBackPhoto = false;
 let pattern: Pattern | null = null;
+
+// body scan state
+let scanRaw: RawMesh | null = null;
+let scanTurns = 0;
+let scanNorm: NormalizedScan | null = null;
+let scanData: ScanData | null = null;
+let scanObj: THREE.Object3D | null = null;
 let openings: Uint8Array = new Uint8Array(0);
 let cloth: Cloth | null = null;
 let clothMesh: THREE.Mesh | null = null;
 let bodyObj: THREE.Object3D | null = null;
-let texture: THREE.CanvasTexture | null = null;
-const clothMat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.92 });
+let texFront: THREE.CanvasTexture | null = null;
+let texBack: THREE.CanvasTexture | null = null;
+let texSide: THREE.CanvasTexture | null = null;
+
+// Side photo: projected from +x / -x onto surfaces that face sideways (sleeves, side seams).
+const sideUniforms = {
+  uSideMap: { value: null as THREE.Texture | null },
+  uSideRect: { value: new THREE.Vector4(0, 1, 0, 1) },
+  uBox: { value: new THREE.Vector4(-0.1, 0.1, 0, 1) },
+  uFlip: { value: 0 },
+  uSideOn: { value: 0 },
+};
+function makeClothMat() {
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.92 });
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, sideUniforms);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWPos;\nvarying vec3 vWNrm;')
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvWNrm = normalize(mat3(modelMatrix) * objectNormal);',
+      );
+    sh.fragmentShader = sh.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vWPos;
+varying vec3 vWNrm;
+uniform sampler2D uSideMap;
+uniform vec4 uSideRect;
+uniform vec4 uBox;
+uniform float uFlip;
+uniform float uSideOn;`,
+      )
+      .replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+if (uSideOn > 0.5) {
+  float tz = (uBox.y - vWPos.z) / max(uBox.y - uBox.x, 1e-4);
+  if (vWPos.x < 0.0) tz = 1.0 - tz;
+  if (uFlip > 0.5) tz = 1.0 - tz;
+  float ty = (vWPos.y - uBox.z) / max(uBox.w - uBox.z, 1e-4);
+  vec4 sc = texture2D(uSideMap, vec2(mix(uSideRect.x, uSideRect.y, tz), mix(uSideRect.z, uSideRect.w, ty)));
+  float sw = smoothstep(0.55, 0.9, abs(vWNrm.x)) * sc.a;
+  diffuseColor.rgb = mix(diffuseColor.rgb, sc.rgb, sw);
+}`,
+      );
+  };
+  return m;
+}
+const frontMat = makeClothMat();
+const backMat = makeClothMat();
 
 // ---------- UI wiring ----------
 const bodyFields: [keyof BodyMeasurements, string, number, number][] = [
@@ -58,37 +139,79 @@ const bodyFields: [keyof BodyMeasurements, string, number, number][] = [
   ['hip', 'Hip', 80, 140],
   ['shoulderWidth', 'Shoulders', 36, 56],
 ];
+const bodySliders = new Map<keyof BodyMeasurements, { input: HTMLInputElement; out: HTMLElement }>();
 for (const [key, label, min, max] of bodyFields) {
   const l = document.createElement('label');
   l.innerHTML = `${label}<input type="range" min="${min}" max="${max}" value="${bodyM[key]}"><output>${bodyM[key]}</output>`;
   const input = l.querySelector('input')!;
   const out = l.querySelector('output')!;
+  bodySliders.set(key, { input, out });
   input.addEventListener('input', () => {
     bodyM[key] = +input.value;
     out.textContent = input.value;
   });
-  input.addEventListener('change', rebuild);
+  // with a scan, only the height changes geometry; the other numbers just feed the fit report
+  input.addEventListener('change', () => (scanRaw && key === 'height' ? rebuildScan() : rebuild()));
   $('body-controls').appendChild(l);
 }
+function setBodySlider(key: keyof BodyMeasurements, v: number) {
+  const sl = bodySliders.get(key)!;
+  const clamped = Math.min(+sl.input.max, Math.max(+sl.input.min, Math.round(v)));
+  sl.input.value = String(clamped);
+  sl.out.textContent = String(clamped);
+  bodyM[key] = clamped;
+}
 const opt = (v: string, t: string) => `<option value="${v}">${t}</option>`;
-$<HTMLSelectElement>('sample').innerHTML = SAMPLES.map((s) => opt(s.id, s.label)).join('');
+$<HTMLSelectElement>('sample').innerHTML = opt('', 'Load a sample garment…') + SAMPLES.map((s) => opt(s.id, s.label)).join('');
 $<HTMLSelectElement>('preset').innerHTML = PRESETS.map((p) => opt(p.id, p.label)).join('');
 $<HTMLSelectElement>('size').innerHTML = SIZES.map((s, i) => opt(String(i), `${s.name} (${Math.round(s.scale * 100)}%)`)).join('');
 $<HTMLSelectElement>('fabric').innerHTML = Object.entries(FABRICS).map(([k, f]) => opt(k, f.label)).join('');
 $<HTMLSelectElement>('size').value = String(st.sizeIdx);
 
-$<HTMLSelectElement>('sample').addEventListener('change', (e) => loadSample((e.target as HTMLSelectElement).value));
-$<HTMLInputElement>('file').addEventListener('change', async (e) => {
-  const f = (e.target as HTMLInputElement).files?.[0];
-  if (!f) return;
-  const bmp = await createImageBitmap(f);
-  const k = Math.min(1, 1536 / Math.max(bmp.width, bmp.height));
-  const c = document.createElement('canvas');
-  c.width = Math.round(bmp.width * k);
-  c.height = Math.round(bmp.height * k);
-  c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
-  st.threshold = undefined;
-  setSource(c);
+// photo slots
+const thumbs = new Map<Slot, HTMLCanvasElement>();
+for (const [slot, label] of SLOTS) {
+  const d = document.createElement('div');
+  d.className = 'slot';
+  d.innerHTML = `<b>${label}</b><canvas width="144" height="144"></canvas><input type="file" accept="image/*"><button class="x" title="Remove">×</button>`;
+  thumbs.set(slot, d.querySelector('canvas')!);
+  d.querySelector('input')!.addEventListener('change', async (e) => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    const bmp = await createImageBitmap(f);
+    const k = Math.min(1, 1536 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * k);
+    c.height = Math.round(bmp.height * k);
+    c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
+    canvases[slot] = c;
+    st.threshold = undefined;
+    processPhotos();
+  });
+  d.querySelector('.x')!.addEventListener('click', () => {
+    delete canvases[slot];
+    processPhotos();
+  });
+  $('slots').appendChild(d);
+}
+function drawThumbs() {
+  for (const [slot] of SLOTS) {
+    const t = thumbs.get(slot)!;
+    const ctx = t.getContext('2d')!;
+    ctx.clearRect(0, 0, t.width, t.height);
+    const c = canvases[slot];
+    if (!c) continue;
+    const k = Math.min(t.width / c.width, t.height / c.height);
+    ctx.drawImage(c, (t.width - c.width * k) / 2, (t.height - c.height * k) / 2, c.width * k, c.height * k);
+  }
+}
+
+$<HTMLSelectElement>('sample').addEventListener('change', (e) => {
+  const id = (e.target as HTMLSelectElement).value;
+  if (id) loadSample(id);
+});
+$<HTMLInputElement>('sideflip').addEventListener('change', (e) => {
+  sideUniforms.uFlip.value = (e.target as HTMLInputElement).checked ? 1 : 0;
 });
 $<HTMLSelectElement>('preset').addEventListener('change', (e) => {
   st.preset = (e.target as HTMLSelectElement).value as PresetId;
@@ -113,7 +236,7 @@ $<HTMLInputElement>('threshold').addEventListener('input', (e) => {
   st.threshold = +(e.target as HTMLInputElement).value;
   $('threshold-out').textContent = String(st.threshold);
 });
-$<HTMLInputElement>('threshold').addEventListener('change', () => processImage());
+$<HTMLInputElement>('threshold').addEventListener('change', () => processPhotos());
 $<HTMLInputElement>('offset').addEventListener('input', (e) => {
   st.offset = +(e.target as HTMLInputElement).value;
   $('offset-out').textContent = String(st.offset);
@@ -127,13 +250,87 @@ $<HTMLInputElement>('arm').addEventListener('input', (e) => {
 $<HTMLInputElement>('arm').addEventListener('change', rebuild);
 $<HTMLSelectElement>('mode').addEventListener('change', (e) => {
   st.mode = (e.target as HTMLSelectElement).value as typeof st.mode;
-  clothMat.map = st.mode === 'photo' ? texture : null;
-  clothMat.needsUpdate = true;
-  $('legend').style.display = st.mode === 'photo' ? 'none' : 'block';
+  applyMode();
 });
 $('resim').addEventListener('click', rebuild);
 
-// ---------- garment pipeline: photo -> mask -> pattern ----------
+function applyMode() {
+  const photo = st.mode === 'photo';
+  frontMat.map = photo ? texFront : null;
+  backMat.map = photo ? texBack : null;
+  frontMat.needsUpdate = backMat.needsUpdate = true;
+  sideUniforms.uSideOn.value = photo && texSide ? 1 : 0;
+  $('legend').style.display = photo ? 'none' : 'block';
+}
+
+// body scan controls
+$('scan-btn').addEventListener('click', () => $<HTMLInputElement>('scan-file').click());
+$<HTMLInputElement>('scan-file').addEventListener('change', async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (!f) return;
+  try {
+    status('Reading scan…');
+    await setScan(await loadScanFile(f));
+  } catch (err) {
+    status(`Could not load the scan: ${(err as Error).message}`);
+  }
+});
+$('scan-demo').addEventListener('click', () => void setScan(demoScanMesh()));
+$('scan-rot').addEventListener('click', () => {
+  scanTurns = (scanTurns + 1) % 4;
+  void rebuildScan();
+});
+$('scan-param').addEventListener('click', () => {
+  scanRaw = null;
+  scanData = null;
+  scanNorm = null;
+  if (scanObj) scene.remove(scanObj);
+  scanObj = null;
+  $('scan-tools').style.display = 'none';
+  $('body-note').textContent = 'Parametric body from measurements.';
+  rebuild();
+});
+
+function status(t: string) {
+  $('status').textContent = t;
+}
+const nextFrame = () => new Promise<void>((r) => setTimeout(r, 30));
+
+async function setScan(raw: RawMesh) {
+  scanRaw = raw;
+  scanTurns = 0;
+  await rebuildScan(true);
+}
+
+/** Normalise the scan to the chosen height, build its collision field and measure it. */
+async function rebuildScan(readMeasurements = false) {
+  if (!scanRaw) return;
+  status('Building body collision field…');
+  await nextFrame();
+  const H = bodyM.height;
+  scanNorm = normalizeScan(scanRaw, H, scanTurns);
+  scanData = new ScanData(toSoup(scanNorm), H / 100);
+  if (readMeasurements) {
+    const m = scanData.measurements;
+    for (const k of ['chest', 'waist', 'hip', 'shoulderWidth'] as const) if (m[k] > 0) setBodySlider(k, m[k]);
+  }
+  if (scanObj) scene.remove(scanObj);
+  scanObj = scanMesh(scanNorm);
+  $('scan-tools').style.display = 'flex';
+  $('body-note').textContent =
+    'Using your scan: scaled to the height below and measured automatically (you can correct the numbers). If it faces the wrong way, use Rotate 90°.';
+  rebuild();
+}
+
+function scanMesh(n: NormalizedScan): THREE.Object3D {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(n.pos, 3));
+  geo.setIndex(new THREE.BufferAttribute(n.idx, 1));
+  geo.computeVertexNormals();
+  return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc89b7b, roughness: 0.8, side: THREE.DoubleSide }));
+}
+
+// ---------- garment pipeline: photos -> masks -> pattern ----------
 function loadSample(id: string) {
   const def = SAMPLES.find((s) => s.id === id)!;
   st.preset = def.preset;
@@ -141,61 +338,178 @@ function loadSample(id: string) {
   st.threshold = undefined;
   $<HTMLSelectElement>('preset').value = st.preset;
   $<HTMLInputElement>('length').value = String(st.length);
-  setSource(drawSample(def, 400));
+  for (const k of ['front', 'back', 'side', 'flat'] as Slot[]) delete canvases[k];
+  canvases.front = drawSample(def, 400, 'front');
+  canvases.back = drawSample(def, 400, 'back');
+  processPhotos();
 }
 
-function setSource(c: HTMLCanvasElement) {
-  srcCanvas = c;
-  texture?.dispose();
-  texture = new THREE.CanvasTexture(c);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
-  clothMat.map = st.mode === 'photo' ? texture : null;
-  clothMat.needsUpdate = true;
-  processImage();
+function toTexture(c: HTMLCanvasElement) {
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
 }
 
-function processImage() {
+function segmentCanvas(c: HTMLCanvasElement): Photo & { threshold: number; usedAlpha: boolean } {
   // work at modest resolution; the full-size image is only used as the texture
-  const k = Math.min(1, 420 / Math.max(srcCanvas.width, srcCanvas.height));
-  const w = Math.round(srcCanvas.width * k);
-  const h = Math.round(srcCanvas.height * k);
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext('2d', { willReadFrequently: true })!;
-  ctx.drawImage(srcCanvas, 0, 0, w, h);
+  const k = Math.min(1, 420 / Math.max(c.width, c.height));
+  const w = Math.round(c.width * k);
+  const h = Math.round(c.height * k);
+  const tmpc = document.createElement('canvas');
+  tmpc.width = w;
+  tmpc.height = h;
+  const ctx = tmpc.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(c, 0, 0, w, h);
   const seg = segment(ctx.getImageData(0, 0, w, h).data, w, h, { threshold: st.threshold });
-  const slider = $<HTMLInputElement>('threshold');
-  if (st.threshold === undefined) {
-    slider.value = String(Math.round(seg.threshold));
-    $('threshold-out').textContent = seg.usedAlpha ? 'alpha' : 'auto';
+  return { canvas: c, w, h, mask: seg.mask, threshold: seg.threshold, usedAlpha: seg.usedAlpha };
+}
+
+/** The side photo as an RGBA canvas whose alpha is the garment mask, so background is never projected. */
+function cutOutCanvas(p: Photo): HTMLCanvasElement {
+  const out = document.createElement('canvas');
+  out.width = p.canvas.width;
+  out.height = p.canvas.height;
+  const ctx = out.getContext('2d')!;
+  ctx.drawImage(p.canvas, 0, 0);
+  const m = document.createElement('canvas');
+  m.width = p.w;
+  m.height = p.h;
+  const mctx = m.getContext('2d')!;
+  const img = mctx.createImageData(p.w, p.h);
+  for (let i = 0; i < p.mask.length; i++) {
+    img.data[i * 4 + 3] = p.mask[i] ? 255 : 0;
   }
-  pattern = buildPattern(seg.mask, w, h);
+  mctx.putImageData(img, 0, 0);
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.drawImage(m, 0, 0, out.width, out.height);
+  return out;
+}
+
+function processPhotos() {
+  drawThumbs();
+  photos = {};
+  let usedThreshold: number | null = null;
+  let alpha = false;
+  for (const [slot] of SLOTS) {
+    const c = canvases[slot];
+    if (!c) continue;
+    const r = segmentCanvas(c);
+    photos[slot] = r;
+    if ((slot === 'flat' || (slot === 'front' && !photos.flat)) && usedThreshold === null) {
+      usedThreshold = r.threshold;
+      alpha = r.usedAlpha;
+    }
+  }
+  srcPhoto = photos.flat ?? photos.front ?? null;
+  const slider = $<HTMLInputElement>('threshold');
+  if (!srcPhoto) {
+    pattern = null;
+    if (clothMesh) scene.remove(clothMesh);
+    clothMesh = null;
+    cloth = null;
+    status('Add a front or flat-lay photo of the garment.');
+    drawEditor();
+    return;
+  }
+  srcCanvas = srcPhoto.canvas;
+  if (st.threshold === undefined && usedThreshold !== null) {
+    slider.value = String(Math.round(usedThreshold));
+    $('threshold-out').textContent = alpha ? 'alpha' : 'auto';
+  }
+  pattern = buildPattern(srcPhoto.mask, srcPhoto.w, srcPhoto.h);
   if (!pattern) {
-    $('status').textContent = 'Could not find a garment in this image — try the cut-out slider.';
+    status('Could not find a garment in this image — try the cut-out slider.');
     return;
   }
   openings = autoOpenings(pattern, getPreset(st.preset));
+
+  // Register the other photos onto the pattern and prepare their textures.
+  const src = { mask: srcPhoto.mask, w: srcPhoto.w, h: srcPhoto.h };
+  const notes: string[] = [];
+  const frontPhoto = photos.front ?? photos.flat!;
+  let tFront: Affine;
+  if (frontPhoto === srcPhoto) tFront = identity();
+  else {
+    const r = alignMask(src, frontPhoto, false);
+    tFront = r.transform;
+    notes.push(`front↔flat match ${Math.round(r.iou * 100)}%`);
+  }
+  hasBackPhoto = !!photos.back;
+  let tBack = tFront;
+  let backPhoto: Photo = frontPhoto;
+  if (photos.back) {
+    const r = alignMask(src, photos.back, 'auto');
+    tBack = r.transform;
+    backPhoto = photos.back;
+    notes.push(`back match ${Math.round(r.iou * 100)}%${r.iou < 0.6 ? ' (low — does the back photo show the same garment?)' : ''}`);
+  }
+  uvFront = uvFor(pattern, tFront, frontPhoto);
+  uvBack = uvFor(pattern, tBack, backPhoto);
+
+  texFront?.dispose();
+  texBack?.dispose();
+  texSide?.dispose();
+  texFront = toTexture(frontPhoto.canvas);
+  texBack = backPhoto === frontPhoto ? texFront : toTexture(backPhoto.canvas);
+  texSide = null;
+  if (photos.side) {
+    texSide = toTexture(cutOutCanvas(photos.side));
+    sideUniforms.uSideMap.value = texSide;
+    const bb = maskRect(photos.side);
+    sideUniforms.uSideRect.value.set(bb.minX / photos.side.w, bb.maxX / photos.side.w, 1 - bb.maxY / photos.side.h, 1 - bb.minY / photos.side.h);
+    notes.push('side photo projected on sides');
+  }
+  applyMode();
+  statusNotes = notes.join(' · ');
   rebuild();
+}
+let statusNotes = '';
+
+/** Pattern pixels already are the source photo's pixels. */
+function identity(): Affine {
+  return { m: 1, sx: 1, sy: 1, ox: 0, oy: 0, cx: 0, cy: 0 };
+}
+
+function uvFor(p: Pattern, t: Affine, photo: Photo): Float32Array {
+  const N = p.pts.length / 2;
+  const out = new Float32Array(N * 2);
+  for (let i = 0; i < N; i++) {
+    const [qx, qy] = applyAffine(t, p.pts[i * 2], p.pts[i * 2 + 1]);
+    out[i * 2] = qx / photo.w;
+    out[i * 2 + 1] = 1 - qy / photo.h;
+  }
+  return out;
+}
+
+function maskRect(p: Photo) {
+  let minX = p.w, minY = p.h, maxX = 0, maxY = 0;
+  for (let y = 0; y < p.h; y++)
+    for (let x = 0; x < p.w; x++)
+      if (p.mask[y * p.w + x]) {
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x + 1);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y + 1);
+      }
+  return { minX, minY, maxX, maxY };
 }
 
 // ---------- body + cloth ----------
 function bodyMesh(b: Body): THREE.Object3D {
   const g = new THREE.Group();
   const mat = new THREE.MeshStandardMaterial({ color: 0xc89b7b, roughness: 0.8 });
-  const S = b.sections;
+  const S = b.sections.filter((q) => q.y >= b.visibleYMin - 1e-6);
   const seg = 48;
   const verts: number[] = [];
   const idx: number[] = [];
-  for (const s of S.filter((q) => q.y >= b.visibleYMin - 1e-6)) {
+  for (const s of S) {
     for (let r = 0; r <= seg; r++) {
       const t = (r / seg) * Math.PI * 2;
       verts.push(Math.sin(t) * s.a, s.y, Math.cos(t) * s.b);
     }
   }
-  const rows = S.filter((q) => q.y >= b.visibleYMin - 1e-6).length;
-  for (let i = 0; i < rows - 1; i++) {
+  for (let i = 0; i < S.length - 1; i++) {
     for (let r = 0; r < seg; r++) {
       const a = i * (seg + 1) + r;
       const c = a + seg + 1;
@@ -233,30 +547,58 @@ function bodyMesh(b: Body): THREE.Object3D {
 
 function rebuild() {
   if (bodyObj) scene.remove(bodyObj);
+  bodyObj = null;
   if (clothMesh) {
     scene.remove(clothMesh);
     clothMesh.geometry.dispose();
     clothMesh = null;
   }
   cloth = null;
+  if (scanObj) scene.remove(scanObj);
   if (!pattern) return;
 
   const preset = getPreset(st.preset);
   const fabric = FABRICS[st.fabric];
   const H = bodyM.height / 100;
   const patternH = pattern.bbox.maxY - pattern.bbox.minY;
-  const metersPerPx = (st.length / 100) * SIZES[st.sizeIdx].scale / patternH;
-  const topY = preset.anchor * H + st.offset / 100;
+  const metersPerPx = ((st.length / 100) * SIZES[st.sizeIdx].scale) / patternH;
+  let topY = preset.anchor * H + st.offset / 100;
+  // with a scan, hang tops from the scan's own shoulder line
+  if (scanData && preset.anchor > 0.8) topY = scanData.shoulderLineY - 0.01 + st.offset / 100;
 
-  const sh = new Body(bodyM, 30).sectionAt(LANDMARKS.shoulder * H);
-  const arm = st.armAuto ? estimateArmAngle(pattern, metersPerPx, topY, sh.a) : st.arm;
-  if (st.armAuto) {
-    $<HTMLInputElement>('arm').value = String(Math.round(arm));
-    $('arm-out').textContent = 'auto';
+  let body: BodyModel;
+  let sleeveWarp: ConstructorParameters<typeof Cloth>[0]['sleeveWarp'];
+  const useScan = !!scanData;
+  if (useScan) {
+    const sd = scanData!;
+    body = sd.collider(preset.hangsFromHips);
+    scene.add(scanObj!);
+    bodyObj = null;
+    if (st.preset === 'top') {
+      const torsoHalf = torsoHalfWidth(pattern, metersPerPx);
+      if (torsoHalf !== null) {
+        const garmentAngle = estimateArmAngle(pattern, metersPerPx, topY, sd.shoulderHalfWidth);
+        sleeveWarp = {
+          torsoHalf,
+          jointX: sd.shoulderHalfWidth - 0.02,
+          jointY: LANDMARKS.shoulder * H - 0.035,
+          deltaDeg: sd.armAngle - garmentAngle,
+        };
+      }
+    }
+    $('arm-out').textContent = `scan ${Math.round(sd.armAngle)}°`;
+  } else {
+    const sh = new Body(bodyM, 30).sectionAt(LANDMARKS.shoulder * H);
+    const arm = st.armAuto ? estimateArmAngle(pattern, metersPerPx, topY, sh.a) : st.arm;
+    if (st.armAuto) {
+      $<HTMLInputElement>('arm').value = String(Math.round(arm));
+      $('arm-out').textContent = 'auto';
+    }
+    const pb = new Body(bodyM, arm, preset.hangsFromHips);
+    body = pb;
+    bodyObj = bodyMesh(pb);
+    scene.add(bodyObj);
   }
-  const body = new Body(bodyM, arm, preset.hangsFromHips);
-  bodyObj = bodyMesh(body);
-  scene.add(bodyObj);
 
   cloth = new Cloth({
     body,
@@ -267,26 +609,47 @@ function rebuild() {
     holdTop: preset.holdTop,
     stiffness: fabric.stiffness,
     bend: fabric.bend,
+    sleeveWarp,
   });
   cloth.settle(160);
 
   const n = cloth.renderMap.length;
+  const N = n / 2;
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
-  geo.setAttribute('uv', new THREE.BufferAttribute(cloth.uv, 2));
+  const uv = new Float32Array(n * 2);
+  uv.set(uvFront, 0);
+  uv.set(uvBack, N * 2);
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
   geo.setIndex(new THREE.BufferAttribute(cloth.indices, 1));
-  clothMesh = new THREE.Mesh(geo, clothMat);
+  geo.addGroup(0, cloth.frontIndexCount, 0);
+  geo.addGroup(cloth.frontIndexCount, cloth.indices.length - cloth.frontIndexCount, 1);
+  clothMesh = new THREE.Mesh(geo, [frontMat, backMat]);
   clothMesh.frustumCulled = false;
   scene.add(clothMesh);
   controls.target.set(0, H * 0.58, 0);
+  updateSideBox();
 
-  $('status').textContent = `${cloth.count} particles · ${(cloth.indices.length / 3) | 0} triangles`;
+  status(`${cloth.count} particles · ${(cloth.indices.length / 3) | 0} triangles${statusNotes ? ' · ' + statusNotes : ''}`);
   report(body, metersPerPx, topY);
   drawEditor();
 }
 
-function report(body: Body, metersPerPx: number, topY: number) {
+/** Bounds of the draped cloth, used to map the side photo onto it. */
+function updateSideBox() {
+  if (!cloth) return;
+  let zMin = Infinity, zMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+  for (let i = 0; i < cloth.count; i++) {
+    zMin = Math.min(zMin, cloth.pos[i * 3 + 2]);
+    zMax = Math.max(zMax, cloth.pos[i * 3 + 2]);
+    yMin = Math.min(yMin, cloth.pos[i * 3 + 1]);
+    yMax = Math.max(yMax, cloth.pos[i * 3 + 1]);
+  }
+  sideUniforms.uBox.value.set(zMin, zMax, yMin, yMax);
+}
+
+function report(body: BodyModel, metersPerPx: number, topY: number) {
   if (!pattern) return;
   const m = measureGarment(pattern, body, metersPerPx, topY, FABRICS[st.fabric].stretch, st.preset === 'top');
   const cls = (v: string) =>
@@ -422,7 +785,7 @@ function frame() {
       const p = cloth.renderMap[k];
       pos.setXYZ(k, cloth.pos[p * 3], cloth.pos[p * 3 + 1], cloth.pos[p * 3 + 2]);
       if (st.mode === 'photo') {
-        const v = k < half ? 1 : 0.8; // the inside/back is a little darker
+        const v = k < half || hasBackPhoto ? 1 : 0.8; // without a back photo the back is a darker copy of the front
         col.setXYZ(k, v, v, v);
       } else {
         const c = heat(p, cloth);
@@ -442,4 +805,4 @@ loadSample('tshirt');
 frame();
 
 // debugging / screenshot hook
-(window as unknown as { __app: unknown }).__app = { camera, controls };
+(window as unknown as { __app: unknown }).__app = { camera, controls, st };
