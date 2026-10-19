@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cloth Simulator</title>
+  <style>
+    html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; background: #15171c; color: #e6e8ee; }
+    #app { display: flex; height: 100%; }
+    #panel { width: 300px; padding: 16px; overflow-y: auto; background: #1d2027; box-sizing: border-box; }
+    #view { flex: 1; position: relative; }
+    canvas { display: block; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #8f97a8; margin: 18px 0 8px; }
+    label { display: grid; grid-template-columns: 90px 1fr 44px; align-items: center; gap: 8px; margin: 6px 0; }
+    label output { text-align: right; color: #8f97a8; }
+    select, button { width: 100%; padding: 6px; background: #2a2e38; color: inherit; border: 1px solid #3a3f4c; border-radius: 6px; margin-top: 6px; }
+    button { cursor: pointer; }
+    table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+    td, th { padding: 3px 4px; text-align: left; font-weight: normal; }
+    th { color: #8f97a8; }
+    .v-too { color: #ff6b6b; } .v-snug { color: #ffb86b; } .v-regular { color: #6bdc8b; } .v-loose { color: #6bb7ff; }
+    #legend { position: absolute; left: 16px; bottom: 16px; font-size: 12px; color: #c4c9d6; }
+    #legend i { display: inline-block; width: 160px; height: 10px; vertical-align: middle; margin: 0 6px; border-radius: 5px;
+      background: linear-gradient(90deg, #3b82f6, #e5e7eb, #ef4444); }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="panel">
+      <h1>Cloth Simulator</h1>
+      <h2>Body (cm)</h2>
+      <div id="body-controls"></div>
+      <h2>Garment</h2>
+      <select id="size"></select>
+      <select id="mode">
+        <option value="strain">Heatmap: fabric tension</option>
+        <option value="gap">Heatmap: gap to body</option>
+      </select>
+      <button id="resim">Re-drape</button>
+      <h2>Fit report</h2>
+      <table id="report"></table>
+      <h2>Size recommendation</h2>
+      <table id="recs"></table>
+    </div>
+    <div id="view"><div id="legend">loose<i></i>tight</div></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
