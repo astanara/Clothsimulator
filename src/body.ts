@@ -10,14 +10,24 @@ export interface BodyMeasurements {
   waist: number;
   hip: number;
   shoulderWidth: number;
+  /** Optional extra circumferences (cm); sensible values are derived when omitted. */
+  ribcage?: number;
+  upperHip?: number;
+  elbow?: number;
+  wrist?: number;
 }
 
+/** Measurements of the current user (38/31.5/37 in etc. converted to cm; shoulder width estimated). */
 export const DEFAULT_BODY: BodyMeasurements = {
-  height: 175,
-  chest: 98,
-  waist: 82,
-  hip: 100,
-  shoulderWidth: 44,
+  height: 177,
+  chest: 96.5,
+  waist: 80,
+  hip: 94,
+  shoulderWidth: 41,
+  ribcage: 86.4,
+  upperHip: 86.4,
+  elbow: 28,
+  wrist: 19,
 };
 
 export interface Section {
@@ -50,7 +60,9 @@ export function ellipseFromCircumference(c: number, depthRatio: number): { a: nu
 export const LANDMARKS = {
   crotch: 0.47,
   hip: 0.52,
+  upperHip: 0.57,
   waist: 0.62,
+  ribcage: 0.67,
   chest: 0.72,
   shoulder: 0.82,
   neck: 0.86,
@@ -95,7 +107,9 @@ export class Body implements BodyModel {
         : []),
       [LANDMARKS.crotch, cm(m.hip), 0.75],
       [LANDMARKS.hip, cm(m.hip), 0.75],
+      [LANDMARKS.upperHip, cm(m.upperHip ?? (m.hip + m.waist) / 2), 0.74],
       [LANDMARKS.waist, cm(m.waist), 0.72],
+      [LANDMARKS.ribcage, cm(m.ribcage ?? (m.waist + m.chest) / 2), 0.72],
       [LANDMARKS.chest, cm(m.chest), 0.72],
       [LANDMARKS.shoulder, shoulderC, 0.55],
       [LANDMARKS.neck, 0.36, 0.9],
@@ -142,8 +156,8 @@ export class Body implements BodyModel {
       this.capsules.push({
         a: [jx, jy, 0],
         b: [jx + s * Math.sin(th) * L, jy - Math.cos(th) * L, 0],
-        ra: 0.05,
-        rb: 0.032,
+        ra: this.m.elbow ? Math.max(0.035, this.m.elbow / 100 / (2 * Math.PI) * 1.1) : 0.05,
+        rb: this.m.wrist ? Math.max(0.025, this.m.wrist / 100 / (2 * Math.PI)) : 0.032,
       });
     }
     // Head

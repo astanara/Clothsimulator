@@ -137,6 +137,8 @@ const bodyFields: [keyof BodyMeasurements, string, number, number][] = [
   ['chest', 'Chest', 76, 140],
   ['waist', 'Waist', 60, 140],
   ['hip', 'Hip', 80, 140],
+  ['upperHip', 'Upper hip', 70, 140],
+  ['ribcage', 'Ribcage', 66, 130],
   ['shoulderWidth', 'Shoulders', 36, 56],
 ];
 const bodySliders = new Map<keyof BodyMeasurements, { input: HTMLInputElement; out: HTMLElement }>();
@@ -410,6 +412,7 @@ function processPhotos() {
     cloth = null;
     status('Add a front or flat-lay photo of the garment.');
     drawEditor();
+    rebuild();
     return;
   }
   srcCanvas = srcPhoto.canvas;
@@ -555,7 +558,16 @@ function rebuild() {
   }
   cloth = null;
   if (scanObj) scene.remove(scanObj);
-  if (!pattern) return;
+  if (!pattern) {
+    // no garment yet: just show the body
+    if (scanData && scanObj) scene.add(scanObj);
+    else {
+      bodyObj = bodyMesh(new Body(bodyM, 25));
+      scene.add(bodyObj);
+    }
+    controls.target.set(0, (bodyM.height / 100) * 0.58, 0);
+    return;
+  }
 
   const preset = getPreset(st.preset);
   const fabric = FABRICS[st.fabric];
