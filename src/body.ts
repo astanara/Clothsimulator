@@ -15,6 +15,8 @@ export interface BodyMeasurements {
   upperHip?: number;
   elbow?: number;
   wrist?: number;
+  /** Front-to-back depth divided by width of the torso cross-section at these levels (from photos). */
+  depthRatio?: { chest: number; waist: number; hip: number };
 }
 
 /** Measurements of the current user (38/31.5/37 in etc. converted to cm; shoulder width estimated). */
@@ -23,11 +25,13 @@ export const DEFAULT_BODY: BodyMeasurements = {
   chest: 96.5,
   waist: 80,
   hip: 94,
-  shoulderWidth: 41,
+  shoulderWidth: 42,
   ribcage: 86.4,
   upperHip: 86.4,
   elbow: 28,
   wrist: 19,
+  // read from the front/side photos (black leggings set), calibrated with the tape measurements
+  depthRatio: { chest: 0.7, waist: 0.62, hip: 0.6 },
 };
 
 export interface Section {
@@ -98,6 +102,7 @@ export class Body implements BodyModel {
     const cm = (v: number) => v / 100;
     // [height fraction, circumference (m), depth/width ratio]
     const shoulderC = Math.max(cm(m.shoulderWidth) * 2.2, cm(m.chest) * 0.95);
+    const dr = m.depthRatio ?? { chest: 0.72, waist: 0.72, hip: 0.75 };
     const keys: [number, number, number][] = [
       ...(fillCrotch
         ? ([
@@ -105,12 +110,12 @@ export class Body implements BodyModel {
             [0.38, cm(m.hip) * 0.88, 0.78],
           ] as [number, number, number][])
         : []),
-      [LANDMARKS.crotch, cm(m.hip), 0.75],
-      [LANDMARKS.hip, cm(m.hip), 0.75],
-      [LANDMARKS.upperHip, cm(m.upperHip ?? (m.hip + m.waist) / 2), 0.74],
-      [LANDMARKS.waist, cm(m.waist), 0.72],
-      [LANDMARKS.ribcage, cm(m.ribcage ?? (m.waist + m.chest) / 2), 0.72],
-      [LANDMARKS.chest, cm(m.chest), 0.72],
+      [LANDMARKS.crotch, cm(m.hip), dr.hip],
+      [LANDMARKS.hip, cm(m.hip), dr.hip],
+      [LANDMARKS.upperHip, cm(m.upperHip ?? (m.hip + m.waist) / 2), (dr.hip + dr.waist) / 2],
+      [LANDMARKS.waist, cm(m.waist), dr.waist],
+      [LANDMARKS.ribcage, cm(m.ribcage ?? (m.waist + m.chest) / 2), (dr.waist + dr.chest) / 2],
+      [LANDMARKS.chest, cm(m.chest), dr.chest],
       [LANDMARKS.shoulder, shoulderC, 0.55],
       [LANDMARKS.neck, 0.36, 0.9],
       [LANDMARKS.neck + 0.03, 0.34, 0.9],

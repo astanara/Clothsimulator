@@ -56,6 +56,7 @@ let envTex: THREE.Texture | null = null;
 
 // ---------- state ----------
 const bodyM: BodyMeasurements = { ...DEFAULT_BODY };
+type NumKey = Exclude<keyof BodyMeasurements, 'depthRatio'>;
 const st = {
   preset: 'top' as PresetId,
   length: 70,
@@ -64,6 +65,7 @@ const st = {
   threshold: undefined as number | undefined,
   offset: 0,
   width: 100,
+  strapIn: 0.5,
   quality: 'preview' as 'preview' | 'high',
   finish: 'auto' as FinishId,
   armAuto: true,
@@ -84,6 +86,8 @@ interface Photo {
   mask: Uint8Array;
   /** garment bounds including thin straps that were removed from `mask` */
   fullBBox: { minX: number; minY: number; maxX: number; maxY: number };
+  /** x (px) of thin straps found at the top of the full silhouette */
+  straps: number[];
 }
 const canvases: Partial<Record<Slot, HTMLCanvasElement>> = {};
 let photos: Partial<Record<Slot, Photo>> = {};
@@ -271,7 +275,7 @@ function applyFinish() {
 }
 
 // ---------- UI wiring ----------
-const bodyFields: [keyof BodyMeasurements, string, number, number][] = [
+const bodyFields: [NumKey, string, number, number][] = [
   ['height', 'Height', 150, 200],
   ['chest', 'Chest', 76, 140],
   ['waist', 'Waist', 60, 140],
@@ -280,7 +284,7 @@ const bodyFields: [keyof BodyMeasurements, string, number, number][] = [
   ['ribcage', 'Ribcage', 66, 130],
   ['shoulderWidth', 'Shoulders', 36, 56],
 ];
-const bodySliders = new Map<keyof BodyMeasurements, { input: HTMLInputElement; out: HTMLElement }>();
+const bodySliders = new Map<NumKey, { input: HTMLInputElement; out: HTMLElement }>();
 for (const [key, label, min, max] of bodyFields) {
   const l = document.createElement('label');
   l.innerHTML = `${label}<input type="range" min="${min}" max="${max}" value="${bodyM[key]}"><output>${bodyM[key]}</output>`;
@@ -295,7 +299,7 @@ for (const [key, label, min, max] of bodyFields) {
   input.addEventListener('change', () => (scanRaw && key === 'height' ? rebuildScan() : rebuild()));
   $('body-controls').appendChild(l);
 }
-function setBodySlider(key: keyof BodyMeasurements, v: number) {
+function setBodySlider(key: NumKey, v: number) {
   const sl = bodySliders.get(key)!;
   const clamped = Math.min(+sl.input.max, Math.max(+sl.input.min, Math.round(v)));
   sl.input.value = String(clamped);
@@ -408,6 +412,10 @@ $<HTMLInputElement>('arm').addEventListener('change', rebuild);
 $<HTMLSelectElement>('mode').addEventListener('change', (e) => {
   st.mode = (e.target as HTMLSelectElement).value as typeof st.mode;
   applyMode();
+});
+$<HTMLInputElement>('strapw').addEventListener('change', (e) => {
+  st.strapIn = Math.max(0.125, +(e.target as HTMLInputElement).value || 0.5);
+  updateStraps();
 });
 $('resim').addEventListener('click', rebuild);
 
@@ -653,8 +661,26 @@ function segmentCanvas(c: HTMLCanvasElement): Photo & { threshold: number; usedA
   ctx.drawImage(c, 0, 0, w, h);
   const thin = getPreset(st.preset).id === 'strap' ? Math.max(4, Math.round(0.03 * Math.max(w, h))) : 0;
   const seg = segment(ctx.getImageData(0, 0, w, h).data, w, h, { threshold: st.threshold, removeThinBelow: thin, erode: Math.max(3, Math.round(Math.max(w, h) / 140)) });
-  const full = maskRect({ canvas: c, w, h, mask: seg.fullMask, fullBBox: { minX: 0, minY: 0, maxX: w, maxY: h } });
-  return { canvas: c, w, h, mask: seg.mask, fullBBox: full, threshold: seg.threshold, usedAlpha: seg.usedAlpha };
+  const full = maskRect({ canvas: c, w, h, mask: seg.fullMask, fullBBox: { minX: 0, minY: 0, maxX: w, maxY: h }, straps: [] });
+  const straps = thin ? detectStraps(seg.fullMask, w, h, full) : [];
+  return { canvas: c, w, h, mask: seg.mask, fullBBox: full, straps, threshold: seg.threshold, usedAlpha: seg.usedAlpha };
+}
+
+/** Centres (px) of the thin vertical features at the very top of the silhouette (straps). */
+function detectStraps(mask: Uint8Array, w: number, h: number, bb: { minX: number; minY: number; maxX: number; maxY: number }): number[] {
+  const y = Math.min(h - 1, Math.round(bb.minY + (bb.maxY - bb.minY) * 0.035));
+  const centres: number[] = [];
+  let x = 0;
+  while (x < w) {
+    if (!mask[y * w + x]) {
+      x++;
+      continue;
+    }
+    const s = x;
+    while (x < w && mask[y * w + x]) x++;
+    if (x - s < 0.12 * (bb.maxX - bb.minX)) centres.push((s + x) / 2);
+  }
+  return centres;
 }
 
 /** The side photo as an RGBA canvas whose alpha is the garment mask, so background is never projected. */
@@ -711,7 +737,25 @@ function processPhotos() {
     $('threshold-out').textContent = alpha ? 'alpha' : 'auto';
   }
   pattern = buildPattern(srcPhoto.mask, srcPhoto.w, srcPhoto.h, st.quality === 'high' ? HIGH.cells : 44);
-  if (pattern) pattern.fullBBox = srcPhoto.fullBBox;
+  if (pattern) {
+    pattern.fullBBox = srcPhoto.fullBBox;
+    // pattern points where each strap leaves the top edge of the bodice
+    strapVerts = [];
+    const topLimit = pattern.bbox.minY + 0.08 * (pattern.bbox.maxY - pattern.bbox.minY);
+    for (const sx of srcPhoto.straps) {
+      let best = -1;
+      let bd = Infinity;
+      for (let i = 0; i < pattern.pts.length / 2; i++) {
+        if (pattern.pts[i * 2 + 1] > topLimit) continue;
+        const d = Math.abs(pattern.pts[i * 2] - sx);
+        if (d < bd) {
+          bd = d;
+          best = i;
+        }
+      }
+      if (best >= 0 && !strapVerts.includes(best)) strapVerts.push(best);
+    }
+  }
   if (!pattern) {
     status('Could not find a garment in this image — try the cut-out slider.');
     return;
@@ -759,6 +803,12 @@ function processPhotos() {
   rebuild();
 }
 let statusNotes = '';
+// shoulder straps are drawn as separate ribbons (they are thinner than the cloth mesh)
+let strapMesh: THREE.Mesh | null = null;
+let strapBody: BodyModel | null = null;
+let strapVerts: number[] = [];
+const strapMat = new THREE.MeshPhysicalMaterial({ color: 0x0c0c0e, roughness: 0.45, clearcoat: 0.35, side: THREE.DoubleSide });
+const STRAP_SAMPLES = 28;
 /** high quality: steps of simulation still to run, and whether the cloth is frozen afterwards */
 let settleLeft = 0;
 let frozen = false;
@@ -853,6 +903,10 @@ function bodyMesh(b: Body, hi = false): THREE.Object3D {
 }
 
 function rebuild() {
+  if (strapMesh) {
+    scene.remove(strapMesh);
+    strapMesh = null;
+  }
   if (bodyObj) scene.remove(bodyObj);
   bodyObj = null;
   if (clothMesh) {
@@ -970,6 +1024,7 @@ function rebuild() {
   applyFinish();
   controls.target.set(0, H * 0.58, 0);
   updateSideBox();
+  buildStraps(body);
 
   status(`${cloth.count} particles · ${(cloth.indices.length / 3) | 0} triangles${statusNotes ? ' · ' + statusNotes : ''}`);
   report(body, metersPerPx, topY);
@@ -987,6 +1042,70 @@ function updateSideBox() {
     yMax = Math.max(yMax, cloth.pos[i * 3 + 1]);
   }
   sideUniforms.uBox.value.set(zMin, zMax, yMin, yMax);
+}
+
+function buildStraps(body: BodyModel) {
+  if (strapMesh) {
+    scene.remove(strapMesh);
+    strapMesh.geometry.dispose();
+    strapMesh = null;
+  }
+  if (!cloth || st.preset !== 'strap' || !strapVerts.length) return;
+  strapBody = body;
+  const S = strapVerts.length;
+  const n = STRAP_SAMPLES;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(S * (n + 1) * 2 * 3), 3));
+  const idx: number[] = [];
+  for (let s = 0; s < S; s++) {
+    for (let k = 0; k < n; k++) {
+      const a = (s * (n + 1) + k) * 2;
+      idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+  }
+  geo.setIndex(idx);
+  strapMesh = new THREE.Mesh(geo, strapMat);
+  strapMesh.frustumCulled = false;
+  strapMesh.castShadow = strapMesh.receiveShadow = true;
+  scene.add(strapMesh);
+  updateStraps();
+}
+
+/** Lay each strap from its front attachment, over the top of the shoulder, to its back attachment. */
+function updateStraps() {
+  if (!strapMesh || !cloth || !strapBody) return;
+  const N = cloth.renderMap.length / 2;
+  const half = (st.strapIn * 0.0254) / 2;
+  const pos = strapMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+  const tmp = { x: 0, y: 0, z: 0 };
+  const n = STRAP_SAMPLES;
+  strapVerts.forEach((vi, s) => {
+    const kf = cloth!.renderMap[vi] * 3;
+    const kb = cloth!.renderMap[N + vi] * 3;
+    const P0 = [cloth!.pos[kf], cloth!.pos[kf + 1], cloth!.pos[kf + 2]];
+    const P2 = [cloth!.pos[kb], cloth!.pos[kb + 1], cloth!.pos[kb + 2]];
+    // top of the shoulder under the strap: march down until the body surface
+    const x = (P0[0] + P2[0]) / 2;
+    const z = (P0[2] + P2[2]) / 2;
+    let y = Math.max(P0[1], P2[1]) + 0.35;
+    while (y > 0.5 && strapBody!.distance(x, y, z) > 0.004) y -= 0.004;
+    const P1 = [x, y + 0.005, z];
+    // quadratic Bezier that passes through P1 at its middle
+    const C = [0, 1, 2].map((c) => 2 * P1[c] - 0.5 * (P0[c] + P2[c]));
+    for (let k = 0; k <= n; k++) {
+      const t = k / n;
+      const b = [0, 1, 2].map((c) => (1 - t) * (1 - t) * P0[c] + 2 * (1 - t) * t * C[c] + t * t * P2[c]);
+      tmp.x = b[0];
+      tmp.y = b[1];
+      tmp.z = b[2];
+      strapBody!.collide(tmp, 0.0045);
+      const i = (s * (n + 1) + k) * 2;
+      pos.setXYZ(i, tmp.x - half, tmp.y, tmp.z);
+      pos.setXYZ(i + 1, tmp.x + half, tmp.y, tmp.z);
+    }
+  });
+  pos.needsUpdate = true;
+  strapMesh.geometry.computeVertexNormals();
 }
 
 function report(body: BodyModel, metersPerPx: number, topY: number) {
@@ -1169,6 +1288,7 @@ function frame() {
     pos.needsUpdate = true;
     col.needsUpdate = true;
     geo.computeVertexNormals();
+    updateStraps();
   }
   controls.update();
   renderer.render(scene, camera);
@@ -1179,4 +1299,4 @@ loadSample('tshirt');
 frame();
 
 // debugging / screenshot hook
-(window as unknown as { __app: unknown }).__app = { camera, controls, st, get cloth() { return cloth; }, get pattern() { return pattern; }, get texFront() { return texFront; }, get texBack() { return texBack; } };
+(window as unknown as { __app: unknown }).__app = { camera, controls, st, get strapVerts() { return strapVerts; }, get cloth() { return cloth; }, get pattern() { return pattern; }, get texFront() { return texFront; }, get texBack() { return texBack; } };
