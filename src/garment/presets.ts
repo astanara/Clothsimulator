@@ -138,3 +138,23 @@ export function widthAtRow(pattern: Pattern, y: number, cx: number): number | nu
   while (r < w - 1 && mask[row * w + r + 1]) r++;
   return r - l + 1;
 }
+
+/** Carry opening flags from one pattern of a garment to another (finer or coarser) by nearest outline point. */
+export function transferOpenings(from: Pattern, fromOpen: Uint8Array, to: Pattern): Uint8Array {
+  const out = new Uint8Array(to.boundary.length);
+  to.boundary.forEach((pi, k) => {
+    const u = to.pts[pi * 2] / to.w;
+    const v = to.pts[pi * 2 + 1] / to.h;
+    let best = Infinity;
+    let flag = 0;
+    from.boundary.forEach((qi, j) => {
+      const d = (from.pts[qi * 2] / from.w - u) ** 2 + (from.pts[qi * 2 + 1] / from.h - v) ** 2;
+      if (d < best) {
+        best = d;
+        flag = fromOpen[j];
+      }
+    });
+    out[k] = flag;
+  });
+  return out;
+}

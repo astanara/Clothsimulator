@@ -163,3 +163,34 @@ describe('photo registration', () => {
     expect(alignMask(pat, mirrored, false).iou).toBeLessThan(auto.iou);
   });
 });
+
+describe('coarse-to-fine drape', () => {
+  it('a fine cloth adopts the draped shape of a coarse one', () => {
+    const def = SAMPLES.find((s) => s.id === 'dress')!;
+    const seg = segment(rasteriseOutline(def.outline), 400, 400);
+    const preset = getPreset(def.preset);
+    const body = new Body(DEFAULT_BODY, 30, true);
+    const make = (cells: number) => {
+      const pattern = buildPattern(seg.mask, 400, 400, cells)!;
+      const s = 0.9 / (pattern.bbox.maxY - pattern.bbox.minY);
+      return new Cloth({
+        body, pattern, openings: autoOpenings(pattern, preset), metersPerPx: s,
+        topY: preset.anchor * body.height, holdTop: true, stiffness: 1, bend: 0.3,
+      });
+    };
+    const coarse = make(30);
+    coarse.settle(150);
+    const fine = make(70);
+    fine.adoptPose(coarse);
+    const range = (c: Cloth) => {
+      let lo = 9, hi = -9;
+      for (let i = 0; i < c.count; i++) { lo = Math.min(lo, c.pos[i * 3 + 1]); hi = Math.max(hi, c.pos[i * 3 + 1]); }
+      return [lo, hi];
+    };
+    const [cl, ch] = range(coarse);
+    const [fl, fh] = range(fine);
+    expect(Math.abs(fl - cl)).toBeLessThan(0.04);
+    expect(Math.abs(fh - ch)).toBeLessThan(0.04);
+    for (const v of fine.pos) expect(Number.isFinite(v)).toBe(true);
+  });
+});

@@ -216,6 +216,73 @@ export class Cloth {
     this.measure();
   }
 
+  /**
+   * Start from the draped shape of a coarser cloth built from the same garment: every vertex of this
+   * (finer) pattern is placed at the matching point of the coarse mesh by barycentric interpolation.
+   * Converging a fine mesh from scratch is very slow; this gives it the overall drape for free.
+   */
+  adoptPose(coarse: Cloth) {
+    const hp = this.pattern;
+    const cp = coarse.pattern;
+    const Nh = hp.pts.length / 2;
+    const Nc = cp.pts.length / 2;
+    const cu = (i: number) => cp.pts[i * 2] / cp.w;
+    const cv = (i: number) => cp.pts[i * 2 + 1] / cp.h;
+    const T = cp.tris.length / 3;
+    const bb = new Float32Array(T * 4);
+    for (let t = 0; t < T; t++) {
+      const a = cp.tris[t * 3], b = cp.tris[t * 3 + 1], c = cp.tris[t * 3 + 2];
+      bb[t * 4] = Math.min(cu(a), cu(b), cu(c));
+      bb[t * 4 + 1] = Math.max(cu(a), cu(b), cu(c));
+      bb[t * 4 + 2] = Math.min(cv(a), cv(b), cv(c));
+      bb[t * 4 + 3] = Math.max(cv(a), cv(b), cv(c));
+    }
+    const margin = 0.03;
+    for (let i = 0; i < Nh; i++) {
+      const u = hp.pts[i * 2] / hp.w;
+      const v = hp.pts[i * 2 + 1] / hp.h;
+      let bestT = -1;
+      let bestMin = -Infinity;
+      let bw: [number, number, number] = [1, 0, 0];
+      for (let t = 0; t < T; t++) {
+        if (u < bb[t * 4] - margin || u > bb[t * 4 + 1] + margin || v < bb[t * 4 + 2] - margin || v > bb[t * 4 + 3] + margin) continue;
+        const a = cp.tris[t * 3], b = cp.tris[t * 3 + 1], c = cp.tris[t * 3 + 2];
+        const d = (cv(b) - cv(c)) * (cu(a) - cu(c)) + (cu(c) - cu(b)) * (cv(a) - cv(c));
+        if (Math.abs(d) < 1e-12) continue;
+        const w0 = ((cv(b) - cv(c)) * (u - cu(c)) + (cu(c) - cu(b)) * (v - cv(c))) / d;
+        const w1 = ((cv(c) - cv(a)) * (u - cu(c)) + (cu(a) - cu(c)) * (v - cv(c))) / d;
+        const w2 = 1 - w0 - w1;
+        const m = Math.min(w0, w1, w2);
+        if (m > bestMin) {
+          bestMin = m;
+          bestT = t;
+          bw = [w0, w1, w2];
+          if (m >= 0) break;
+        }
+      }
+      if (bestT < 0) continue;
+      let [w0, w1, w2] = bw;
+      w0 = Math.max(0, w0);
+      w1 = Math.max(0, w1);
+      w2 = Math.max(0, w2);
+      const sum = w0 + w1 + w2 || 1;
+      w0 /= sum;
+      w1 /= sum;
+      w2 /= sum;
+      const tri = [cp.tris[bestT * 3], cp.tris[bestT * 3 + 1], cp.tris[bestT * 3 + 2]];
+      for (const panel of [0, 1]) {
+        const cOff = panel ? Nc : 0;
+        const k = this.renderMap[(panel ? Nh : 0) + i] * 3;
+        const p0 = coarse.renderMap[cOff + tri[0]] * 3;
+        const p1 = coarse.renderMap[cOff + tri[1]] * 3;
+        const p2 = coarse.renderMap[cOff + tri[2]] * 3;
+        for (let c = 0; c < 3; c++) this.pos[k + c] = w0 * coarse.pos[p0 + c] + w1 * coarse.pos[p1 + c] + w2 * coarse.pos[p2 + c];
+      }
+    }
+    this.prev.set(this.pos);
+    this.measure();
+  }
+
   private gravityScale = 1;
   private relaxing = false;
 

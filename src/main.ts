@@ -8,7 +8,7 @@ import { Cloth } from './cloth';
 import { FABRICS, FabricId, GarmentMeasure, SIZES, analyseFit, sizeTable } from './fit';
 import { measureGarment, torsoHalfWidth } from './garment/measure';
 import { Pattern, buildPattern } from './garment/pattern';
-import { PRESETS, PresetId, autoOpenings, estimateArmAngle, getPreset } from './garment/presets';
+import { PRESETS, PresetId, autoOpenings, estimateArmAngle, getPreset, transferOpenings } from './garment/presets';
 import { segment } from './image/segment';
 import { SAMPLES, drawSample } from './samples';
 import { demoScanMesh } from './scan/demoScan';
@@ -762,7 +762,7 @@ let statusNotes = '';
 /** high quality: steps of simulation still to run, and whether the cloth is frozen afterwards */
 let settleLeft = 0;
 let frozen = false;
-const HIGH = { res: 900, cells: 110, steps: 320, iters: 14, perFrame: 4 };
+const HIGH = { res: 900, cells: 110, steps: 90, iters: 14, perFrame: 4 };
 let lastFit: GarmentMeasure | null = null;
 
 /** Pattern pixels already are the source photo's pixels. */
@@ -917,10 +917,10 @@ function rebuild() {
     scene.add(bodyObj);
   }
 
-  cloth = new Cloth({
+  const clothParams = (pat: Pattern, open: Uint8Array) => ({
     body,
-    pattern,
-    openings,
+    pattern: pat,
+    openings: open,
     metersPerPx,
     topY,
     holdTop: preset.holdTop,
@@ -929,8 +929,17 @@ function rebuild() {
     sleeveWarp,
     widthScale: st.width / 100,
   });
-  if (st.quality === 'high') {
-    // drape progressively in the render loop so the page stays responsive
+  cloth = new Cloth(clothParams(pattern, openings));
+  if (st.quality === 'high' && srcPhoto) {
+    // drape a coarse version first (it converges to the right length quickly), then give the fine
+    // mesh that shape and only simulate it long enough to develop wrinkles
+    const coarsePattern = buildPattern(srcPhoto.mask, srcPhoto.w, srcPhoto.h, 44);
+    if (coarsePattern) {
+      coarsePattern.fullBBox = srcPhoto.fullBBox;
+      const coarse = new Cloth(clothParams(coarsePattern, transferOpenings(pattern, openings, coarsePattern)));
+      coarse.settle(180);
+      cloth.adoptPose(coarse);
+    }
     settleLeft = HIGH.steps;
     frozen = false;
   } else {
@@ -1129,7 +1138,7 @@ function frame() {
       for (let i = 0; i < HIGH.perFrame && settleLeft > 0; i++, settleLeft--) cloth.step(1 / 60, HIGH.iters);
       status(`High quality: draping… ${Math.round(100 * (1 - settleLeft / HIGH.steps))}%`);
       if (settleLeft === 0) {
-        cloth.relax(300);
+        cloth.relax(60);
         frozen = true;
         status(`High quality: ${cloth.count} particles · ${(cloth.indices.length / 3) | 0} triangles${statusNotes ? ' · ' + statusNotes : ''}`);
       }
