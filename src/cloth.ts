@@ -292,7 +292,7 @@ export class Cloth {
           const cy = tmp.y - y0;
           const cz = tmp.z - z0;
           const cl = Math.hypot(cx, cy, cz);
-          if (cl > 1e-7) {
+          if (cl > 1e-7 && !this.relaxing) {
             const nx = cx / cl, ny = cy / cl, nz = cz / cl;
             const dx = pos[k] - prev[k], dy = pos[k + 1] - prev[k + 1], dz = pos[k + 2] - prev[k + 2];
             const dn = dx * nx + dy * ny + dz * nz;
