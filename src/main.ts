@@ -940,6 +940,9 @@ function rebuild() {
       coarse.settle(180);
       cloth.adoptPose(coarse);
     }
+    // keep the coarse drape: light gravity and fully stiff edges, the fine pass only adds wrinkles
+    cloth.gravityScale = 0.25;
+    cloth.fullStiffness = true;
     settleLeft = HIGH.steps;
     frozen = false;
   } else {

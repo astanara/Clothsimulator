@@ -283,7 +283,10 @@ export class Cloth {
     this.measure();
   }
 
-  private gravityScale = 1;
+  /** Multiplier on gravity (the high quality pass uses a light touch so the coarse drape is kept). */
+  gravityScale = 1;
+  /** Treat structural edges as fully stiff regardless of the fabric's stretchiness. */
+  fullStiffness = false;
   private relaxing = false;
 
   /**
@@ -291,12 +294,13 @@ export class Cloth {
    * weight back to its true length (long hanging garments, fine meshes).
    */
   relax(iterations = 120) {
+    const g0 = this.gravityScale;
     this.gravityScale = 0;
     this.relaxing = true; // structural edges at full stiffness so the true length is restored
     this.prev.set(this.pos);
     this.step(1 / 60, iterations);
     this.relaxing = false;
-    this.gravityScale = 1;
+    this.gravityScale = g0;
   }
 
   step(dt = 1 / 60, iterations = 16) {
@@ -331,7 +335,7 @@ export class Cloth {
         const dy = pos[b + 1] - pos[a + 1];
         const dz = pos[b + 2] - pos[a + 2];
         const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-9;
-        const f = ((len - rest[c]) / len) * (this.relaxing && this.structural[c] ? 1 : stiff[c]) * 0.5;
+        const f = ((len - rest[c]) / len) * ((this.relaxing || this.fullStiffness) && this.structural[c] ? 1 : stiff[c]) * 0.5;
         pos[a] += dx * f;
         pos[a + 1] += dy * f;
         pos[a + 2] += dz * f;
