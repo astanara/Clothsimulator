@@ -78,6 +78,13 @@
         <option value="strain">Heatmap: fabric tension</option>
         <option value="gap">Heatmap: gap to body</option>
       </select>
+      <label class="wide">Quality<select id="quality">
+        <option value="preview">Preview (fast, live)</option>
+        <option value="high">High quality render</option>
+      </select></label>
+      <label class="wide">Finish<select id="finish"></select></label>
+      <p class="hint" id="quality-note">High quality re-meshes the garment at about 1 cm triangles from a higher-resolution cut-out, simulates it longer, and renders with studio lighting, soft shadows and fabric materials. It takes a few seconds to drape.</p>
+      <div class="row"><button id="dl-png">Download PNG</button><button id="dl-glb">Download GLB</button></div>
       <button id="resim">Re-drape</button>
       <h2>Fit report</h2>
       <table id="report"></table>

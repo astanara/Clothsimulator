@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { Affine, alignMask, applyAffine } from './garment/align';
 import { Body, BodyMeasurements, BodyModel, DEFAULT_BODY, LANDMARKS } from './body';
 import { Cloth } from './cloth';
@@ -27,11 +29,30 @@ const camera = new THREE.PerspectiveCamera(40, 1, 0.05, 20);
 camera.position.set(0, 1.2, 3.0);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1.0, 0);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.2));
+const hemi = new THREE.HemisphereLight(0xffffff, 0x444455, 1.2);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 1.3);
 sun.position.set(2, 3, 3);
+sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.camera.left = -1.5;
+sun.shadow.camera.right = 1.5;
+sun.shadow.camera.top = 2;
+sun.shadow.camera.bottom = -0.3;
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 10;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.012;
+sun.shadow.radius = 4;
 scene.add(sun);
-scene.add(new THREE.GridHelper(3, 12, 0x333844, 0x252932));
+const grid = new THREE.GridHelper(3, 12, 0x333844, 0x252932);
+scene.add(grid);
+// studio floor that only shows shadows (high quality mode)
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(12, 12), new THREE.ShadowMaterial({ opacity: 0.32 }));
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+floor.visible = false;
+scene.add(floor);
+let envTex: THREE.Texture | null = null;
 
 // ---------- state ----------
 const bodyM: BodyMeasurements = { ...DEFAULT_BODY };
@@ -43,6 +64,8 @@ const st = {
   threshold: undefined as number | undefined,
   offset: 0,
   width: 100,
+  quality: 'preview' as 'preview' | 'high',
+  finish: 'auto' as FinishId,
   armAuto: true,
   arm: 30,
   mode: 'photo' as 'photo' | 'strain' | 'gap',
@@ -94,7 +117,7 @@ const sideUniforms = {
   uSideOn: { value: 0 },
 };
 function makeClothMat() {
-  const m = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.92 });
+  const m = new THREE.MeshPhysicalMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.92 });
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, sideUniforms);
     sh.vertexShader = sh.vertexShader
@@ -133,6 +156,119 @@ if (uSideOn > 0.5) {
 }
 const frontMat = makeClothMat();
 const backMat = makeClothMat();
+
+// ---------- fabric finishes (physically based materials) ----------
+type FinishId = 'auto' | 'matte' | 'leather' | 'satin' | 'denim' | 'knit';
+interface Finish {
+  label: string;
+  roughness: number;
+  sheen: number;
+  clearcoat: number;
+  clearcoatRoughness: number;
+  bump: 'fine' | 'grain' | 'twill' | 'knit' | null;
+  bumpScale: number;
+}
+const FINISHES: Record<Exclude<FinishId, 'auto'>, Finish> = {
+  matte: { label: 'Matte cotton / crepe', roughness: 0.88, sheen: 0.25, clearcoat: 0, clearcoatRoughness: 0.5, bump: 'fine', bumpScale: 0.5 },
+  leather: { label: 'Leather / faux leather', roughness: 0.4, sheen: 0, clearcoat: 0.45, clearcoatRoughness: 0.32, bump: 'grain', bumpScale: 1.2 },
+  satin: { label: 'Satin / silk', roughness: 0.28, sheen: 1, clearcoat: 0, clearcoatRoughness: 0.5, bump: null, bumpScale: 0 },
+  denim: { label: 'Denim / twill', roughness: 0.9, sheen: 0.15, clearcoat: 0, clearcoatRoughness: 0.5, bump: 'twill', bumpScale: 1.2 },
+  knit: { label: 'Knit / jersey', roughness: 0.95, sheen: 0.7, clearcoat: 0, clearcoatRoughness: 0.5, bump: 'knit', bumpScale: 1.4 },
+};
+const bumpCache = new Map<string, THREE.CanvasTexture>();
+function bumpTexture(kind: NonNullable<Finish['bump']>): THREE.CanvasTexture {
+  const cached = bumpCache.get(kind);
+  if (cached) return cached;
+  const N = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = N;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#808080';
+  g.fillRect(0, 0, N, N);
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
+  if (kind === 'fine') {
+    const img = g.getImageData(0, 0, N, N);
+    for (let i = 0; i < N * N; i++) {
+      const v = 128 + (rnd() - 0.5) * 90;
+      img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
+    }
+    g.putImageData(img, 0, 0);
+  } else if (kind === 'grain') {
+    // pebbled leather: soft round cells separated by darker creases
+    for (let i = 0; i < 70; i++) {
+      const x = rnd() * N;
+      const y = rnd() * N;
+      const r = 7 + rnd() * 7;
+      for (const [dx, dy] of [[0, 0], [N, 0], [-N, 0], [0, N], [0, -N]]) {
+        const gr = g.createRadialGradient(x + dx, y + dy, 0, x + dx, y + dy, r);
+        gr.addColorStop(0, 'rgba(235,235,235,0.9)');
+        gr.addColorStop(0.75, 'rgba(150,150,150,0.5)');
+        gr.addColorStop(1, 'rgba(90,90,90,0)');
+        g.fillStyle = gr;
+        g.fillRect(x + dx - r, y + dy - r, 2 * r, 2 * r);
+      }
+    }
+  } else if (kind === 'twill') {
+    for (let i = -N; i < N * 2; i += 4) {
+      g.strokeStyle = (i / 4) % 2 ? '#a8a8a8' : '#585858';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(i, 0);
+      g.lineTo(i + N, N);
+      g.stroke();
+    }
+  } else {
+    // knit: columns of V-shaped stitches
+    g.lineWidth = 3;
+    for (let y = 0; y < N; y += 8) {
+      for (let x = 0; x < N; x += 8) {
+        g.strokeStyle = '#c4c4c4';
+        g.beginPath();
+        g.moveTo(x, y);
+        g.lineTo(x + 4, y + 7);
+        g.lineTo(x + 8, y);
+        g.stroke();
+        g.strokeStyle = '#505050';
+        g.beginPath();
+        g.moveTo(x, y + 8);
+        g.lineTo(x + 4, y + 7);
+        g.lineTo(x + 8, y + 8);
+        g.stroke();
+      }
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 8;
+  bumpCache.set(kind, t);
+  return t;
+}
+function currentFinish(): Finish {
+  if (st.finish !== 'auto') return FINISHES[st.finish];
+  return st.fabric === 'woven' ? FINISHES.matte : FINISHES.knit;
+}
+/** Apply the fabric finish to both panels (bump tile size ~1.2 cm in world units). */
+function applyFinish() {
+  const f = currentFinish();
+  const hi = st.quality === 'high';
+  for (const m of [frontMat, backMat]) {
+    m.roughness = hi ? f.roughness : 0.92;
+    m.sheen = hi ? f.sheen : 0;
+    m.sheenRoughness = 0.45;
+    m.sheenColor.set(0xffffff);
+    m.clearcoat = hi ? f.clearcoat : 0;
+    m.clearcoatRoughness = f.clearcoatRoughness;
+    m.bumpMap = hi && f.bump ? bumpTexture(f.bump) : null;
+    m.bumpScale = f.bumpScale;
+    if (m.bumpMap) {
+      const ry = Math.max(8, (st.length / 100 / 0.012) * 1.15);
+      const aspect = srcPhoto ? srcPhoto.w / srcPhoto.h : 0.7;
+      m.bumpMap.repeat.set(ry * aspect, ry);
+    }
+    m.needsUpdate = true;
+  }
+}
 
 // ---------- UI wiring ----------
 const bodyFields: [keyof BodyMeasurements, string, number, number][] = [
@@ -275,6 +411,75 @@ $<HTMLSelectElement>('mode').addEventListener('change', (e) => {
 });
 $('resim').addEventListener('click', rebuild);
 
+$<HTMLSelectElement>('finish').innerHTML =
+  opt('auto', 'Auto (from fabric)') + Object.entries(FINISHES).map(([k, f]) => opt(k, f.label)).join('');
+$<HTMLSelectElement>('finish').addEventListener('change', (e) => {
+  st.finish = (e.target as HTMLSelectElement).value as FinishId;
+  applyFinish();
+});
+$<HTMLSelectElement>('quality').addEventListener('change', async (e) => {
+  st.quality = (e.target as HTMLSelectElement).value as 'preview' | 'high';
+  applyQuality();
+  processPhotos(); // re-cut and re-mesh at the new resolution
+});
+$('dl-png').addEventListener('click', () => void exportPNG());
+$('dl-glb').addEventListener('click', () => void exportGLB());
+
+function applyQuality() {
+  const hi = st.quality === 'high';
+  renderer.setPixelRatio(hi ? 2 : devicePixelRatio);
+  renderer.shadowMap.enabled = hi;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = hi ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  if (hi && !envTex) {
+    const pm = new THREE.PMREMGenerator(renderer);
+    envTex = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  }
+  scene.environment = hi ? envTex : null;
+  scene.environmentIntensity = 0.55;
+  scene.background = new THREE.Color(hi ? 0xe4e1dc : 0x15171c);
+  hemi.intensity = hi ? 0.2 : 1.2;
+  sun.intensity = hi ? 2.4 : 1.3;
+  sun.position.set(hi ? 2.4 : 2, hi ? 3.4 : 3, hi ? 2.6 : 3);
+  sun.castShadow = hi;
+  grid.visible = !hi;
+  floor.visible = hi;
+  $('legend').style.color = hi ? '#333' : '#c4c9d6';
+  $('status').style.color = hi ? '#333' : '#c4c9d6';
+  applyFinish();
+  resize();
+}
+
+function download(url: string, name: string) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+}
+
+/** Render the current view at 3000 px tall and save it. */
+async function exportPNG() {
+  const size = renderer.getSize(new THREE.Vector2());
+  const ratio = renderer.getPixelRatio();
+  const H = 3000;
+  const W = Math.round(H * camera.aspect);
+  renderer.setPixelRatio(1);
+  renderer.setSize(W, H, false);
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL('image/png');
+  renderer.setPixelRatio(ratio);
+  renderer.setSize(size.x, size.y, true);
+  download(url, 'cloth-render.png');
+}
+
+async function exportGLB() {
+  const root = new THREE.Group();
+  for (const o of [clothMesh, bodyObj, scanObj]) if (o) root.add(o.clone());
+  const buf = (await new GLTFExporter().parseAsync(root, { binary: true })) as ArrayBuffer;
+  download(URL.createObjectURL(new Blob([buf], { type: 'model/gltf-binary' })), 'cloth-on-body.glb');
+}
+
 function applyMode() {
   const photo = st.mode === 'photo';
   frontMat.map = photo ? texFront : null;
@@ -348,7 +553,9 @@ function scanMesh(n: NormalizedScan): THREE.Object3D {
   geo.setAttribute('position', new THREE.BufferAttribute(n.pos, 3));
   geo.setIndex(new THREE.BufferAttribute(n.idx, 1));
   geo.computeVertexNormals();
-  return new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc89b7b, roughness: 0.8, side: THREE.DoubleSide }));
+  const m = new THREE.Mesh(geo, skin(THREE.DoubleSide));
+  m.castShadow = m.receiveShadow = true;
+  return m;
 }
 
 // ---------- garment pipeline: photos -> masks -> pattern ----------
@@ -435,7 +642,8 @@ function toTexture(c: HTMLCanvasElement) {
 
 function segmentCanvas(c: HTMLCanvasElement): Photo & { threshold: number; usedAlpha: boolean } {
   // work at modest resolution; the full-size image is only used as the texture
-  const k = Math.min(1, 420 / Math.max(c.width, c.height));
+  const res = st.quality === 'high' ? HIGH.res : 420;
+  const k = Math.min(1, res / Math.max(c.width, c.height));
   const w = Math.round(c.width * k);
   const h = Math.round(c.height * k);
   const tmpc = document.createElement('canvas');
@@ -444,7 +652,7 @@ function segmentCanvas(c: HTMLCanvasElement): Photo & { threshold: number; usedA
   const ctx = tmpc.getContext('2d', { willReadFrequently: true })!;
   ctx.drawImage(c, 0, 0, w, h);
   const thin = getPreset(st.preset).id === 'strap' ? Math.max(4, Math.round(0.03 * Math.max(w, h))) : 0;
-  const seg = segment(ctx.getImageData(0, 0, w, h).data, w, h, { threshold: st.threshold, removeThinBelow: thin });
+  const seg = segment(ctx.getImageData(0, 0, w, h).data, w, h, { threshold: st.threshold, removeThinBelow: thin, erode: Math.max(3, Math.round(Math.max(w, h) / 140)) });
   const full = maskRect({ canvas: c, w, h, mask: seg.fullMask, fullBBox: { minX: 0, minY: 0, maxX: w, maxY: h } });
   return { canvas: c, w, h, mask: seg.mask, fullBBox: full, threshold: seg.threshold, usedAlpha: seg.usedAlpha };
 }
@@ -502,7 +710,7 @@ function processPhotos() {
     slider.value = String(Math.round(usedThreshold));
     $('threshold-out').textContent = alpha ? 'alpha' : 'auto';
   }
-  pattern = buildPattern(srcPhoto.mask, srcPhoto.w, srcPhoto.h);
+  pattern = buildPattern(srcPhoto.mask, srcPhoto.w, srcPhoto.h, st.quality === 'high' ? HIGH.cells : 44);
   if (pattern) pattern.fullBBox = srcPhoto.fullBBox;
   if (!pattern) {
     status('Could not find a garment in this image — try the cut-out slider.');
@@ -551,6 +759,10 @@ function processPhotos() {
   rebuild();
 }
 let statusNotes = '';
+/** high quality: steps of simulation still to run, and whether the cloth is frozen afterwards */
+let settleLeft = 0;
+let frozen = false;
+const HIGH = { res: 900, cells: 110, steps: 320, iters: 14, perFrame: 4 };
 let lastFit: GarmentMeasure | null = null;
 
 /** Pattern pixels already are the source photo's pixels. */
@@ -583,11 +795,19 @@ function maskRect(p: Photo) {
 }
 
 // ---------- body + cloth ----------
-function bodyMesh(b: Body): THREE.Object3D {
+function skin(side: THREE.Side = THREE.FrontSide) {
+  return new THREE.MeshPhysicalMaterial({ color: 0xc89b7b, roughness: 0.58, sheen: 0.35, sheenColor: new THREE.Color(0xffb8a0), sheenRoughness: 0.6, side });
+}
+
+function bodyMesh(b: Body, hi = false): THREE.Object3D {
   const g = new THREE.Group();
-  const mat = new THREE.MeshStandardMaterial({ color: 0xc89b7b, roughness: 0.8 });
-  const S = b.sections.filter((q) => q.y >= b.visibleYMin - 1e-6);
-  const seg = 48;
+  const mat = skin();
+  let S = b.sections.filter((q) => q.y >= b.visibleYMin - 1e-6);
+  if (hi) {
+    S = [];
+    for (let i = 0; i < 260; i++) S.push(b.sectionAt(b.visibleYMin + ((b.yMax - b.visibleYMin) * i) / 259));
+  }
+  const seg = hi ? 112 : 48;
   const verts: number[] = [];
   const idx: number[] = [];
   for (const s of S) {
@@ -607,24 +827,24 @@ function bodyMesh(b: Body): THREE.Object3D {
   geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
   geo.setIndex(idx);
   geo.computeVertexNormals();
-  g.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc89b7b, roughness: 0.8, side: THREE.DoubleSide })));
+  g.add(new THREE.Mesh(geo, skin(THREE.DoubleSide)));
   for (const c of b.capsules) {
     const a = new THREE.Vector3(...c.a);
     const e = new THREE.Vector3(...c.b);
     const len = a.distanceTo(e);
     if (len < 1e-4) {
-      const head = new THREE.Mesh(new THREE.SphereGeometry(c.ra * 0.95, 24, 16), mat);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(c.ra * 0.95, hi ? 64 : 24, hi ? 40 : 16), mat);
       head.scale.set(0.92, 1.15, 1);
       head.position.copy(a);
       g.add(head);
       continue;
     }
-    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(c.rb, c.ra, len, 20), mat);
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(c.rb, c.ra, len, hi ? 56 : 20, hi ? 24 : 1), mat);
     mesh.position.copy(a).add(e).multiplyScalar(0.5);
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), e.clone().sub(a).normalize());
     g.add(mesh);
     for (const [pt, r] of [[a, c.ra], [e, c.rb]] as const) {
-      const ball = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), mat);
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(r, hi ? 40 : 16, hi ? 28 : 12), mat);
       ball.position.copy(pt);
       g.add(ball);
     }
@@ -646,7 +866,7 @@ function rebuild() {
     // no garment yet: just show the body
     if (scanData && scanObj) scene.add(scanObj);
     else {
-      bodyObj = bodyMesh(new Body(bodyM, 25));
+      bodyObj = bodyMesh(new Body(bodyM, 25), st.quality === 'high');
       scene.add(bodyObj);
     }
     controls.target.set(0, (bodyM.height / 100) * 0.58, 0);
@@ -692,7 +912,8 @@ function rebuild() {
     }
     const pb = new Body(bodyM, arm, preset.hangsFromHips);
     body = pb;
-    bodyObj = bodyMesh(pb);
+    bodyObj = bodyMesh(pb, st.quality === 'high');
+    bodyObj.traverse((o) => ((o as THREE.Mesh).isMesh ? (o.castShadow = o.receiveShadow = true) : 0));
     scene.add(bodyObj);
   }
 
@@ -708,7 +929,15 @@ function rebuild() {
     sleeveWarp,
     widthScale: st.width / 100,
   });
-  cloth.settle(160);
+  if (st.quality === 'high') {
+    // drape progressively in the render loop so the page stays responsive
+    settleLeft = HIGH.steps;
+    frozen = false;
+  } else {
+    cloth.settle(160);
+    settleLeft = 0;
+    frozen = false;
+  }
 
   const n = cloth.renderMap.length;
   const N = n / 2;
@@ -724,7 +953,9 @@ function rebuild() {
   geo.addGroup(cloth.frontIndexCount, cloth.indices.length - cloth.frontIndexCount, 1);
   clothMesh = new THREE.Mesh(geo, [frontMat, backMat]);
   clothMesh.frustumCulled = false;
+  clothMesh.castShadow = clothMesh.receiveShadow = true;
   scene.add(clothMesh);
+  applyFinish();
   controls.target.set(0, H * 0.58, 0);
   updateSideBox();
 
@@ -889,10 +1120,23 @@ function resize() {
 }
 addEventListener('resize', resize);
 
+let lastMode = st.mode;
 function frame() {
   requestAnimationFrame(frame);
+  let simulated = true;
   if (cloth && clothMesh) {
-    cloth.step();
+    if (settleLeft > 0) {
+      for (let i = 0; i < HIGH.perFrame && settleLeft > 0; i++, settleLeft--) cloth.step(1 / 60, HIGH.iters);
+      status(`High quality: draping… ${Math.round(100 * (1 - settleLeft / HIGH.steps))}%`);
+      if (settleLeft === 0) {
+        frozen = true;
+        status(`High quality: ${cloth.count} particles · ${(cloth.indices.length / 3) | 0} triangles${statusNotes ? ' · ' + statusNotes : ''}`);
+      }
+    } else if (!frozen) cloth.step();
+    else simulated = lastMode !== st.mode ? true : false;
+    lastMode = st.mode;
+  }
+  if (cloth && clothMesh && (simulated || !frozen)) {
     const geo = clothMesh.geometry;
     const pos = geo.getAttribute('position') as THREE.BufferAttribute;
     const col = geo.getAttribute('color') as THREE.BufferAttribute;
