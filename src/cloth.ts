@@ -216,9 +216,22 @@ export class Cloth {
     this.measure();
   }
 
+  private gravityScale = 1;
+
+  /**
+   * Settle without gravity: lets the constraints pull a garment that has stretched under its own
+   * weight back to its true length (long hanging garments, fine meshes).
+   */
+  relax(iterations = 120) {
+    this.gravityScale = 0;
+    this.prev.set(this.pos);
+    this.step(1 / 60, iterations);
+    this.gravityScale = 1;
+  }
+
   step(dt = 1 / 60, iterations = 16) {
     const { pos, prev, pinY } = this;
-    const g = -9.8 * dt * dt;
+    const g = -9.8 * dt * dt * this.gravityScale;
     const maxMove = 0.02;
     for (let i = 0; i < this.count; i++) {
       const k = i * 3;

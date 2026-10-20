@@ -1129,6 +1129,7 @@ function frame() {
       for (let i = 0; i < HIGH.perFrame && settleLeft > 0; i++, settleLeft--) cloth.step(1 / 60, HIGH.iters);
       status(`High quality: draping… ${Math.round(100 * (1 - settleLeft / HIGH.steps))}%`);
       if (settleLeft === 0) {
+        cloth.relax(150);
         frozen = true;
         status(`High quality: ${cloth.count} particles · ${(cloth.indices.length / 3) | 0} triangles${statusNotes ? ' · ' + statusNotes : ''}`);
       }
