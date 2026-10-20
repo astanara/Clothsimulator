@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Affine, alignMask, applyAffine } from './garment/align';
 import { Body, BodyMeasurements, BodyModel, DEFAULT_BODY, LANDMARKS } from './body';
 import { Cloth } from './cloth';
-import { FABRICS, FabricId, SIZES, analyseFit } from './fit';
+import { FABRICS, FabricId, GarmentMeasure, SIZES, analyseFit, sizeTable } from './fit';
 import { measureGarment, torsoHalfWidth } from './garment/measure';
 import { Pattern, buildPattern } from './garment/pattern';
 import { PRESETS, PresetId, autoOpenings, estimateArmAngle, getPreset } from './garment/presets';
@@ -42,6 +42,7 @@ const st = {
   fabric: 'woven' as FabricId,
   threshold: undefined as number | undefined,
   offset: 0,
+  width: 100,
   armAuto: true,
   arm: 30,
   mode: 'photo' as 'photo' | 'strain' | 'gap',
@@ -58,6 +59,8 @@ interface Photo {
   w: number;
   h: number;
   mask: Uint8Array;
+  /** garment bounds including thin straps that were removed from `mask` */
+  fullBBox: { minX: number; minY: number; maxX: number; maxY: number };
 }
 const canvases: Partial<Record<Slot, HTMLCanvasElement>> = {};
 let photos: Partial<Record<Slot, Photo>> = {};
@@ -219,8 +222,7 @@ $<HTMLSelectElement>('preset').addEventListener('change', (e) => {
   st.preset = (e.target as HTMLSelectElement).value as PresetId;
   st.length = getPreset(st.preset).length;
   $<HTMLInputElement>('length').value = String(st.length);
-  if (pattern) openings = autoOpenings(pattern, getPreset(st.preset));
-  rebuild();
+  processPhotos();
 });
 $<HTMLInputElement>('length').addEventListener('change', (e) => {
   st.length = Math.max(20, +(e.target as HTMLInputElement).value || st.length);
@@ -239,6 +241,23 @@ $<HTMLInputElement>('threshold').addEventListener('input', (e) => {
   $('threshold-out').textContent = String(st.threshold);
 });
 $<HTMLInputElement>('threshold').addEventListener('change', () => processPhotos());
+$<HTMLInputElement>('width').addEventListener('input', (e) => {
+  st.width = +(e.target as HTMLInputElement).value;
+  $('width-out').textContent = `${st.width}%`;
+});
+$<HTMLInputElement>('width').addEventListener('change', rebuild);
+$('fitme').addEventListener('click', () => {
+  if (!lastFit) return;
+  const f = FABRICS[st.fabric];
+  const targetEase = 6 - 40 * f.stretch; // cm; stretchy fabrics are cut smaller than the body
+  const row = lastFit.chest !== null ? ['chest', lastFit.chest, bodyM.chest] : lastFit.hip !== null ? ['hip', lastFit.hip, bodyM.hip] : null;
+  if (!row) return;
+  const k = ((row[2] as number) + targetEase) / ((row[1] as number) / (st.width / 100));
+  st.width = Math.round(Math.min(170, Math.max(70, k * 100)));
+  $<HTMLInputElement>('width').value = String(st.width);
+  $('width-out').textContent = `${st.width}%`;
+  rebuild();
+});
 $<HTMLInputElement>('offset').addEventListener('input', (e) => {
   st.offset = +(e.target as HTMLInputElement).value;
   $('offset-out').textContent = String(st.offset);
@@ -346,6 +365,67 @@ function loadSample(id: string) {
   processPhotos();
 }
 
+/**
+ * Paint the garment's edge colours outwards over the backdrop (and over the anti-aliased rim), so
+ * texture lookups that land just outside the cut-out (photos never register perfectly) pick up
+ * garment colour instead of a pale halo.
+ */
+function bleedEdges(p: Photo, radius = 120): HTMLCanvasElement {
+  const W = p.canvas.width;
+  const H = p.canvas.height;
+  const out = document.createElement('canvas');
+  out.width = W;
+  out.height = H;
+  const ctx = out.getContext('2d', { willReadFrequently: true })!;
+  ctx.drawImage(p.canvas, 0, 0);
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data;
+  // full-resolution mask, shrunk by a few pixels to drop the blended rim
+  const filled = new Uint8Array(W * H);
+  const sx = p.w / W;
+  const sy = p.h / H;
+  for (let y = 0; y < H; y++) {
+    const my = Math.min(p.h - 1, Math.floor(y * sy)) * p.w;
+    for (let x = 0; x < W; x++) filled[y * W + x] = p.mask[my + Math.min(p.w - 1, Math.floor(x * sx))];
+  }
+  const rim = Math.max(2, Math.round(W / 220));
+  let cur = filled;
+  for (let k = 0; k < rim; k++) {
+    const next = new Uint8Array(W * H);
+    for (let y = 1; y < H - 1; y++)
+      for (let x = 1; x < W - 1; x++) {
+        const i = y * W + x;
+        next[i] = cur[i] && cur[i - 1] && cur[i + 1] && cur[i - W] && cur[i + W] ? 1 : 0;
+      }
+    cur = next;
+  }
+  let frontier: number[] = [];
+  for (let i = 0; i < cur.length; i++) {
+    if (!cur[i]) continue;
+    const x = i % W;
+    const y = (i / W) | 0;
+    if ((x > 0 && !cur[i - 1]) || (x < W - 1 && !cur[i + 1]) || (y > 0 && !cur[i - W]) || (y < H - 1 && !cur[i + W])) frontier.push(i);
+  }
+  for (let r = 0; r < radius && frontier.length; r++) {
+    const nextFrontier: number[] = [];
+    for (const i of frontier) {
+      const x = i % W;
+      const y = (i / W) | 0;
+      for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, y > 0 ? i - W : -1, y < H - 1 ? i + W : -1]) {
+        if (j < 0 || cur[j]) continue;
+        cur[j] = 1;
+        d[j * 4] = d[i * 4];
+        d[j * 4 + 1] = d[i * 4 + 1];
+        d[j * 4 + 2] = d[i * 4 + 2];
+        nextFrontier.push(j);
+      }
+    }
+    frontier = nextFrontier;
+  }
+  ctx.putImageData(img, 0, 0);
+  return out;
+}
+
 function toTexture(c: HTMLCanvasElement) {
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
@@ -363,8 +443,10 @@ function segmentCanvas(c: HTMLCanvasElement): Photo & { threshold: number; usedA
   tmpc.height = h;
   const ctx = tmpc.getContext('2d', { willReadFrequently: true })!;
   ctx.drawImage(c, 0, 0, w, h);
-  const seg = segment(ctx.getImageData(0, 0, w, h).data, w, h, { threshold: st.threshold });
-  return { canvas: c, w, h, mask: seg.mask, threshold: seg.threshold, usedAlpha: seg.usedAlpha };
+  const thin = getPreset(st.preset).id === 'strap' ? Math.max(4, Math.round(0.03 * Math.max(w, h))) : 0;
+  const seg = segment(ctx.getImageData(0, 0, w, h).data, w, h, { threshold: st.threshold, removeThinBelow: thin });
+  const full = maskRect({ canvas: c, w, h, mask: seg.fullMask, fullBBox: { minX: 0, minY: 0, maxX: w, maxY: h } });
+  return { canvas: c, w, h, mask: seg.mask, fullBBox: full, threshold: seg.threshold, usedAlpha: seg.usedAlpha };
 }
 
 /** The side photo as an RGBA canvas whose alpha is the garment mask, so background is never projected. */
@@ -421,6 +503,7 @@ function processPhotos() {
     $('threshold-out').textContent = alpha ? 'alpha' : 'auto';
   }
   pattern = buildPattern(srcPhoto.mask, srcPhoto.w, srcPhoto.h);
+  if (pattern) pattern.fullBBox = srcPhoto.fullBBox;
   if (!pattern) {
     status('Could not find a garment in this image — try the cut-out slider.');
     return;
@@ -453,8 +536,8 @@ function processPhotos() {
   texFront?.dispose();
   texBack?.dispose();
   texSide?.dispose();
-  texFront = toTexture(frontPhoto.canvas);
-  texBack = backPhoto === frontPhoto ? texFront : toTexture(backPhoto.canvas);
+  texFront = toTexture(bleedEdges(frontPhoto));
+  texBack = backPhoto === frontPhoto ? texFront : toTexture(bleedEdges(backPhoto));
   texSide = null;
   if (photos.side) {
     texSide = toTexture(cutOutCanvas(photos.side));
@@ -468,6 +551,7 @@ function processPhotos() {
   rebuild();
 }
 let statusNotes = '';
+let lastFit: GarmentMeasure | null = null;
 
 /** Pattern pixels already are the source photo's pixels. */
 function identity(): Affine {
@@ -572,7 +656,7 @@ function rebuild() {
   const preset = getPreset(st.preset);
   const fabric = FABRICS[st.fabric];
   const H = bodyM.height / 100;
-  const patternH = pattern.bbox.maxY - pattern.bbox.minY;
+  const patternH = pattern.fullBBox.maxY - pattern.fullBBox.minY;
   const metersPerPx = ((st.length / 100) * SIZES[st.sizeIdx].scale) / patternH;
   let topY = preset.anchor * H + st.offset / 100;
   // with a scan, hang tops from the scan's own shoulder line
@@ -622,6 +706,7 @@ function rebuild() {
     stiffness: fabric.stiffness,
     bend: fabric.bend,
     sleeveWarp,
+    widthScale: st.width / 100,
   });
   cloth.settle(160);
 
@@ -663,7 +748,8 @@ function updateSideBox() {
 
 function report(body: BodyModel, metersPerPx: number, topY: number) {
   if (!pattern) return;
-  const m = measureGarment(pattern, body, metersPerPx, topY, FABRICS[st.fabric].stretch, st.preset === 'top');
+  const m = measureGarment(pattern, body, metersPerPx, topY, FABRICS[st.fabric].stretch, st.preset === 'top', st.width / 100);
+  lastFit = m;
   const cls = (v: string) =>
     v === 'too tight' ? 'v-too' : v === 'snug' ? 'v-snug' : v === 'regular' ? 'v-regular' : 'v-loose';
   const rows = analyseFit(bodyM, m);
@@ -677,6 +763,25 @@ function report(body: BodyModel, metersPerPx: number, topY: number) {
           )
           .join('')
       : '<tr><td colspan="5">Garment does not cross chest, waist or hip.</td></tr>');
+
+  // what if it were another size? (the photo scaled by each size factor)
+  const patternH = pattern.fullBBox.maxY - pattern.fullBBox.minY;
+  const table = sizeTable(bodyM, (scale) =>
+    measureGarment(pattern!, body, ((st.length / 100) * scale) / patternH, topY, FABRICS[st.fabric].stretch, st.preset === 'top'),
+  );
+  const best = Math.max(...table.map((r) => r.score));
+  const ease = (r: (typeof table)[number], k: string) => {
+    const f = r.fits.find((x) => x.region === k);
+    return f ? `${f.ease > 0 ? '+' : ''}${f.ease.toFixed(0)}` : '–';
+  };
+  $('sizes').innerHTML =
+    '<tr><th>Size</th><th>Chest</th><th>Waist</th><th>Hip</th><th>Fit</th></tr>' +
+    table
+      .map(
+        (r) =>
+          `<tr${r.score === best && best > 0 ? ' style="font-weight:600"' : ''}><td>${r.name}${r.score === best && best > 0 ? ' ★' : ''}</td><td>${ease(r, 'chest')}</td><td>${ease(r, 'waist')}</td><td>${ease(r, 'hip')}</td><td class="${cls(r.worst)}">${r.worst}</td></tr>`,
+      )
+      .join('');
 }
 
 // ---------- 2D outline editor ----------
@@ -817,4 +922,4 @@ loadSample('tshirt');
 frame();
 
 // debugging / screenshot hook
-(window as unknown as { __app: unknown }).__app = { camera, controls, st };
+(window as unknown as { __app: unknown }).__app = { camera, controls, st, get cloth() { return cloth; }, get pattern() { return pattern; }, get texFront() { return texFront; }, get texBack() { return texBack; } };

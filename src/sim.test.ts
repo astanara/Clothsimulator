@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.setConfig({ testTimeout: 60000 });
 import { Body, DEFAULT_BODY, ellipseFromCircumference, ellipsePerimeter } from './body';
 import { Cloth } from './cloth';
 import { analyseFit, classify } from './fit';

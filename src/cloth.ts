@@ -24,6 +24,8 @@ export interface ClothParams {
   stiffness: number;
   /** Resistance to sharp folds 0..1. */
   bend: number;
+  /** Stretch the pattern sideways only (a wider cut at the same length). Default 1. */
+  widthScale?: number;
   /**
    * Swing the sleeves about the shoulder joints by `deltaDeg` in the initial layout, so a flat-lay
    * garment whose sleeves point one way can be put on a body whose arms point another.
@@ -37,7 +39,7 @@ export class Cloth {
   readonly count: number;
   readonly pos: Float32Array;
   private readonly prev: Float32Array;
-  private readonly pinY: Float32Array;
+  readonly pinY: Float32Array;
   private readonly ci: Int32Array;
   private readonly cj: Int32Array;
   private readonly rest: Float32Array;
@@ -74,8 +76,8 @@ export class Cloth {
     for (let i = 0; i < N; i++) back[i] = seam[i] ? front[i] : m++;
     this.count = m;
 
-    const flatX = (i: number) => (pattern.pts[i * 2] - cx) * s;
-    const flatY = (i: number) => p.topY - (pattern.pts[i * 2 + 1] - pattern.bbox.minY) * s;
+    const flatX = (i: number) => (pattern.pts[i * 2] - cx) * s * (p.widthScale ?? 1);
+    const flatY = (i: number) => p.topY - (pattern.pts[i * 2 + 1] - pattern.fullBBox.minY) * s;
     const warped = new Float32Array(N * 2);
     for (let i = 0; i < N; i++) {
       warped[i * 2] = flatX(i);
@@ -214,7 +216,7 @@ export class Cloth {
     this.measure();
   }
 
-  step(dt = 1 / 60, iterations = 10) {
+  step(dt = 1 / 60, iterations = 16) {
     const { pos, prev, pinY } = this;
     const g = -9.8 * dt * dt;
     const maxMove = 0.02;
@@ -235,7 +237,11 @@ export class Cloth {
     const { ci, cj, rest, stiff } = this;
     const tmp = { x: 0, y: 0, z: 0 };
     for (let it = 0; it < iterations; it++) {
-      for (let c = 0; c < ci.length; c++) {
+      // sweep the constraints forwards then backwards on alternate iterations so corrections
+      // travel along long hanging garments faster
+      const nC = ci.length;
+      for (let q = 0; q < nC; q++) {
+        const c = it & 1 ? nC - 1 - q : q;
         const a = ci[c] * 3;
         const b = cj[c] * 3;
         const dx = pos[b] - pos[a];
@@ -257,12 +263,32 @@ export class Cloth {
         tmp.x = pos[k];
         tmp.y = pos[k + 1];
         tmp.z = pos[k + 2];
+        const x0 = tmp.x;
+        const y0 = tmp.y;
+        const z0 = tmp.z;
         if (this.body.collide(tmp, THICKNESS)) {
-          // contact friction: drag the previous position toward the new one
           pos[k] = tmp.x;
           pos[k + 1] = tmp.y;
           pos[k + 2] = tmp.z;
-          for (let c = 0; c < 3; c++) prev[k + c] += (pos[k + c] - prev[k + c]) * 0.6;
+          // Static friction: against the contact normal, cancel the sideways motion of this step
+          // (gravity creep) up to a limit that grows with how hard the cloth is pressed on the body.
+          const cx = tmp.x - x0;
+          const cy = tmp.y - y0;
+          const cz = tmp.z - z0;
+          const cl = Math.hypot(cx, cy, cz);
+          if (cl > 1e-7) {
+            const nx = cx / cl, ny = cy / cl, nz = cz / cl;
+            const dx = pos[k] - prev[k], dy = pos[k + 1] - prev[k + 1], dz = pos[k + 2] - prev[k + 2];
+            const dn = dx * nx + dy * ny + dz * nz;
+            const tx = dx - dn * nx, ty = dy - dn * ny, tz = dz - dn * nz;
+            const tl = Math.hypot(tx, ty, tz);
+            if (tl > 1e-9) {
+              const f = Math.min(1, (0.004 + 0.8 * cl) / tl);
+              pos[k] -= tx * f;
+              pos[k + 1] -= ty * f;
+              pos[k + 2] -= tz * f;
+            }
+          }
         }
       }
     }

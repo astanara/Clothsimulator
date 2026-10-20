@@ -15,6 +15,11 @@ export interface Pattern {
   /** Indices into pts of the outline, in order. */
   boundary: number[];
   bbox: { minX: number; minY: number; maxX: number; maxY: number };
+  /**
+   * Garment extent before thin straps were removed. The length the user gives and the placement on
+   * the body refer to this box (strap tops to hem); defaults to `bbox`.
+   */
+  fullBBox: { minX: number; minY: number; maxX: number; maxY: number };
   /** Mean spacing between points in pixels. */
   spacing: number;
   mask: Uint8Array;
@@ -109,6 +114,7 @@ export function buildPattern(mask: Uint8Array, w: number, h: number, cells = 44)
     tris: Uint32Array.from(keep, (i) => remap[i]),
     boundary,
     bbox: { minX, minY, maxX, maxY },
+    fullBBox: { minX, minY, maxX, maxY },
     spacing,
     mask,
   };

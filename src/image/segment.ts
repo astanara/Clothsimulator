@@ -6,12 +6,16 @@
 export interface SegmentResult {
   /** 1 = garment, 0 = background; length w*h. */
   mask: Uint8Array;
+  /** The mask before thin features were removed (equal to `mask` otherwise). */
+  fullMask: Uint8Array;
   /** Colour-distance threshold that was used (0..441). */
   threshold: number;
   usedAlpha: boolean;
 }
 
 export interface SegmentOptions {
+  /** Remove features thinner than about this many pixels (spaghetti straps, ties) before meshing. */
+  removeThinBelow?: number;
   /** Colour distance from the background colour; auto (Otsu) when omitted. */
   threshold?: number;
   /** Pixels to erode the mask by, to avoid background fringes on the texture. */
@@ -43,25 +47,38 @@ export function segment(
       dist[i] = d;
       hist[Math.min(255, Math.floor((d * 255) / 441.67))]++;
     }
-    threshold = opts.threshold ?? autoThreshold(hist, dist, w, h);
-    for (let i = 0; i < n; i++) raw[i] = dist[i] > threshold ? 1 : 0;
-    // Patterned garments (e.g. white stripes on a white backdrop) can fall apart; close small gaps.
-    for (const r of [0, 2, 4, 7, 11]) {
-      const closed = r ? close(raw, w, h, r) : raw;
-      const total = closed.reduce((a, v) => a + v, 0);
-      const big = largestComponent(fillHoles(closed, w, h), w, h).reduce((a, v) => a + v, 0);
-      if (total === 0 || big / total >= 0.9 || r === 11) {
-        raw = closed;
-        break;
+    // Prefer the strict (Otsu) threshold: it ignores soft shadows beside the garment. Only if that
+    // breaks the garment into pieces (white stripes on a pale backdrop...) try the looser one.
+    const [strict, loose] = autoThresholds(hist, dist, w, h);
+    const candidates = opts.threshold !== undefined ? [opts.threshold] : loose < strict ? [strict, loose] : [strict];
+    for (let c = 0; c < candidates.length; c++) {
+      threshold = candidates[c];
+      for (let i = 0; i < n; i++) raw[i] = dist[i] > threshold ? 1 : 0;
+      let ok = false;
+      for (const r of [0, 2, 4, 7, 11]) {
+        const closed = r ? close(raw, w, h, r) : raw;
+        const total = closed.reduce((a, v) => a + v, 0);
+        const big = largestComponent(fillHoles(closed, w, h), w, h).reduce((a, v) => a + v, 0);
+        if (total > 0 && big / total >= 0.9) {
+          raw = closed;
+          ok = true;
+          break;
+        }
       }
+      if (ok || c === candidates.length - 1) break;
     }
   }
 
   raw = fillHoles(raw, w, h);
   raw = largestComponent(raw, w, h);
-  raw = erode(raw, w, h, opts.erode ?? 2);
+  raw = erode(raw, w, h, opts.erode ?? 3);
   raw = largestComponent(raw, w, h);
-  return { mask: raw, threshold, usedAlpha };
+  const full = raw;
+  if (opts.removeThinBelow && opts.removeThinBelow > 1) {
+    const r = Math.ceil(opts.removeThinBelow / 2);
+    raw = largestComponent(dilate(erode(raw, w, h, r), w, h, r), w, h);
+  }
+  return { mask: raw, fullMask: full, threshold, usedAlpha };
 }
 
 function borderColour(rgba: ArrayLike<number>, w: number, h: number): number[] {
@@ -85,10 +102,11 @@ function borderColour(rgba: ArrayLike<number>, w: number, h: number): number[] {
 }
 
 /**
- * Colour distance above the backdrop's own noise level, but never above the Otsu split.
- * Keeps garment areas that are only slightly different from the backdrop.
+ * [strict, loose] colour-distance thresholds: Otsu's split, and the backdrop's own noise level
+ * (mean + 4 sigma of the border), which keeps garment areas that are only slightly different from
+ * the backdrop but also keeps soft shadows.
  */
-function autoThreshold(hist: Float64Array, dist: Float32Array, w: number, h: number): number {
+function autoThresholds(hist: Float64Array, dist: Float32Array, w: number, h: number): [number, number] {
   let sum = 0;
   let sum2 = 0;
   let cnt = 0;
@@ -109,7 +127,24 @@ function autoThreshold(hist: Float64Array, dist: Float32Array, w: number, h: num
   const mean = sum / cnt;
   const sd = Math.sqrt(Math.max(0, sum2 / cnt - mean * mean));
   const noise = Math.max(14, mean + 4 * sd);
-  return Math.min(noise, otsu(hist) * (441.67 / 255));
+  const strict = otsu(hist) * (441.67 / 255);
+  return [strict, Math.min(noise, strict)];
+}
+
+export function dilate(fg: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  let cur = fg;
+  for (let k = 0; k < r; k++) {
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        out[i] =
+          cur[i] || (x > 0 && cur[i - 1]) || (x < w - 1 && cur[i + 1]) || (y > 0 && cur[i - w]) || (y < h - 1 && cur[i + w]) ? 1 : 0;
+      }
+    }
+    cur = out;
+  }
+  return cur;
 }
 
 export function close(fg: Uint8Array, w: number, h: number, r: number): Uint8Array {

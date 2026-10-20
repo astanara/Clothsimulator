@@ -12,6 +12,7 @@ export function measureGarment(
   topY: number,
   stretch: number,
   hasSleeves = false,
+  widthScale = 1,
 ): GarmentMeasure {
   const cx = (pattern.bbox.minX + pattern.bbox.maxX) / 2;
   // Rows above the armpit include the sleeves; measure the torso below them instead.
@@ -27,9 +28,9 @@ export function measureGarment(
     }
   }
   const at = (frac: number) => {
-    const row = Math.max(minRow, pattern.bbox.minY + (topY - frac * body.height) / metersPerPx);
+    const row = Math.max(minRow, pattern.fullBBox.minY + (topY - frac * body.height) / metersPerPx);
     const w = widthAtRow(pattern, row, cx);
-    return w === null ? null : 2 * w * metersPerPx * 100;
+    return w === null ? null : 2 * w * metersPerPx * widthScale * 100;
   };
   return { chest: at(LANDMARKS.chest), waist: at(LANDMARKS.waist), hip: at(LANDMARKS.hip), stretch };
 }

@@ -1,7 +1,7 @@
 /** Garment categories: where the garment sits on the body and which outline edges are open (not sewn). */
 import type { Pattern } from './pattern';
 
-export type PresetId = 'top' | 'sleeveless' | 'pants' | 'skirt' | 'custom';
+export type PresetId = 'top' | 'sleeveless' | 'strap' | 'pants' | 'skirt' | 'custom';
 
 export interface Preset {
   id: PresetId;
@@ -40,6 +40,16 @@ export const PRESETS: Preset[] = [
     anchor: 0.826,
     holdTop: true,
     isOpening: (nx, ny) => hem(ny) || neck(nx, ny) || (ny < 0.3 && Math.abs(nx) > 0.15),
+  },
+  {
+    id: 'strap',
+    hangsFromHips: true,
+    label: 'Strap or strapless dress / top (thin straps are ignored)',
+    length: 100,
+    anchor: 0.826,
+    holdTop: true,
+    // side seams run all the way up; only the hem and the top edge (neckline) are open
+    isOpening: (nx, ny) => hem(ny) || ny < 0.045 || neck(nx, ny),
   },
   {
     id: 'pants',
@@ -103,7 +113,7 @@ export function estimateArmAngle(
   let angle = 25;
   for (const pi of boundary) {
     const x = (pts[pi * 2] - cx) * metersPerPx;
-    const y = topY - (pts[pi * 2 + 1] - bbox.minY) * metersPerPx;
+    const y = topY - (pts[pi * 2 + 1] - pattern.fullBBox.minY) * metersPerPx;
     const dx = Math.abs(x) - shoulderHalfWidth;
     const dy = jy - y;
     const dist = Math.hypot(dx, dy);

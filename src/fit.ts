@@ -59,3 +59,37 @@ export const SIZES = [
   { name: 'XL', scale: 1.14 },
   { name: 'XXL', scale: 1.21 },
 ];
+
+const PENALTY: Record<Verdict, number> = {
+  'too tight': 10,
+  snug: 1,
+  regular: 0,
+  loose: 1.5,
+  'too loose': 6,
+};
+const SEVERITY: Verdict[] = ['regular', 'snug', 'loose', 'too loose', 'too tight'];
+
+export interface SizeRow {
+  name: string;
+  scale: number;
+  fits: RegionFit[];
+  /** 0..100, higher is a better fit */
+  score: number;
+  worst: Verdict;
+}
+
+/**
+ * Compare every size (the photo scaled by each size factor) against the body.
+ * @param measureAt garment circumferences when the photo is scaled by `scale`
+ */
+export function sizeTable(body: BodyMeasurements, measureAt: (scale: number) => GarmentMeasure): SizeRow[] {
+  return SIZES.map((sz) => {
+    const fits = analyseFit(body, measureAt(sz.scale));
+    const pen = fits.reduce((a, f) => a + PENALTY[f.verdict] + Math.abs(f.ease - 8) * 0.02, 0);
+    const worst = fits.reduce<Verdict>(
+      (w, f) => (SEVERITY.indexOf(f.verdict) > SEVERITY.indexOf(w) ? f.verdict : w),
+      'regular',
+    );
+    return { name: sz.name, scale: sz.scale, fits, score: fits.length ? Math.max(0, Math.round(100 - pen * 5)) : 0, worst };
+  });
+}
