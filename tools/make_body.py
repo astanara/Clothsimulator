@@ -181,7 +181,7 @@ def main():
     ap.add_argument("--elbow", type=float, default=28)
     ap.add_argument("--wrist", type=float, default=19)
     ap.add_argument("--depth", default="0.70,0.62,0.60", help="depth/width at chest,waist,hip")
-    ap.add_argument("--arm-angle", type=float, default=25)
+    ap.add_argument("--arm-angle", type=float, default=35, help="degrees from vertical; keep arms clear of the torso so slices measure the torso only")
     ap.add_argument("--voxel", type=float, default=0.005)
     a = ap.parse_args()
     dc, dw, dh = (float(x) for x in a.depth.split(","))
