@@ -36,6 +36,17 @@ Load an OBJ, GLB/GLTF, PLY or STL (or try *Demo scan*). Code in `src/scan/`:
 - **Measure** (`scanBody.ts`): chest/waist/hip/shoulder width are read from horizontal slices (tape measure = convex hull); arm angle, crotch and shoulder line are detected. The numbers fill the sliders, can be corrected, and feed the fit report.
 - For skirts, dresses and long tops the gap between the legs is closed so the garment hangs from the hips. Sleeves of a flat-lay top are swung to match the scan's arm pose.
 
+## Photoreal render on a PC / Mac (Blender Cycles)
+Tools live in `tools/`. Python needs `numpy scipy scikit-image`; rendering needs Blender 4.x/5.x (or `pip install bpy`).
+
+1. **Body**: `python tools/make_body.py --out body.obj` builds a smooth watertight body from measurements (defaults are the ones entered in the app; see `--help`). It is blended from signed-distance primitives, so it is a clean mannequin with your proportions, not a scan of you.
+2. **Garment on that body**: in the app click *Load body scan...* and pick `body.obj`, add the garment photos, set *Quality* to *High quality render*, then *Download GLB* (the file contains objects named `body`, `garment` and `garment_straps`).
+3. **Render**: `blender -b -P tools/render_blender.py -- --model cloth-on-body.glb --out renders --res 2048 --samples 256`
+   (or `python tools/render_blender.py ...` with the `bpy` module). The GPU is chosen automatically: OptiX/CUDA on NVIDIA RTX, Metal on Apple silicon, else CPU. Options: `--views front,three_quarter,side,back`, `--turntable 60`, `--finish leather|satin|denim|knit|matte`, `--exposure`, `--save-blend`.
+   A final fit pass subdivides the garment once and keeps it a few millimetres above the body, which removes most places where the coarse simulation mesh cuts through the body.
+
+See `docs/PC_RENDER_PLAN.md` for the plan to replace the mannequin with a fitted statistical body model (SMPL-X) and for mobile viewing.
+
 ## Limitations / roadmap
 - Photos must show the garment alone (flat, on a hanger or ghost mannequin). Photos of garments worn by a person would need a clothing-segmentation model to remove the person.
 - The side photo is a projected texture; it does not change the garment's shape. The back panel reuses the front outline (no different back neckline yet).
