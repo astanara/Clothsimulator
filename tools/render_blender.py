@@ -42,6 +42,7 @@ def parse():
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "gpu"])
     ap.add_argument("--turntable", type=int, default=0, help="frames for a 360 degree turntable")
     ap.add_argument("--exposure", type=float, default=0.0, help="exposure compensation in stops")
+    ap.add_argument("--no-fit-pass", action="store_true", help="skip the final push-out of garment vertices from the body")
     ap.add_argument("--save-blend", action="store_true")
     return ap.parse_args(argv)
 
@@ -199,17 +200,32 @@ def main():
         raise SystemExit("give --model, or --body and/or --garment")
     skin = skin_material()
     garment_objs = []
+    body_objs = []
     for o in objs:
         if o.type != "MESH":
             continue
         if o.name.lower().startswith(("body", "scan")) or (a.body and os.path.basename(a.body).split(".")[0] in o.name):
             o.data.materials.clear()
             o.data.materials.append(skin)
+            body_objs.append(o)
         else:
             garment_objs.append(o)
         bpy.context.view_layer.objects.active = o
         o.select_set(True)
         bpy.ops.object.shade_smooth()
+    # The simulation mesh is coarser than the body, so triangles can cut across its curves. Subdivide the
+    # garment once and keep every vertex a few millimetres above the body surface.
+    if body_objs and not a.no_fit_pass:
+        for g in garment_objs:
+            sub = g.modifiers.new("subdivide", "SUBSURF")
+            sub.subdivision_type = "SIMPLE"
+            sub.levels = 1
+            sub.render_levels = 1
+            sw = g.modifiers.new("fit", "SHRINKWRAP")
+            sw.target = body_objs[0]
+            sw.wrap_method = "NEAREST_SURFACEPOINT"
+            sw.wrap_mode = "ABOVE_SURFACE"
+            sw.offset = 0.004
     # rest on the floor
     mn, mx = bounds(objs)
     center = (mn + mx) / 2

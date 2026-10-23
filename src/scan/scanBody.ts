@@ -64,7 +64,7 @@ export class ScanData {
       const y1 = this.crotchY;
       this.filled = buildSDF(this.tris, {
         voxel: this.voxel,
-        fillGap: { y0: y1 - 0.14 * this.height, y1, maxGap: 0.14 },
+        fillGap: { y0: y1 - 0.32 * this.height, y1, maxGap: 0.16 },
       });
     }
     return new ScanCollider(this.filled, this.height);
