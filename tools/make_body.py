@@ -67,10 +67,14 @@ def build(m, voxel=0.005):
     axes = np.array([ellipse_axes(k[1], k[2]) for k in keys])  # (n,2)
 
     def torso_axes(y):
-        f = np.clip(y / H, fr[0], fr[-1])
-        a = np.interp(f, fr, axes[:, 0])
-        b = np.interp(f, fr, axes[:, 1])
-        return a, b
+        f = np.clip(y / H, 0.38, fr[-1])
+        fk = np.clip(f, fr[0], fr[-1])
+        a = np.interp(fk, fr, axes[:, 0])
+        b = np.interp(fk, fr, axes[:, 1])
+        # below the hips the pelvis tapers into the thighs (no ledge where legs start)
+        t = np.interp(y / H, [0.38, 0.45, 0.52], [0.52, 0.84, 1.0])
+        tb = np.interp(y / H, [0.38, 0.45, 0.52], [0.7, 0.9, 1.0])
+        return a * t, b * tb
 
     hip_a = axes[0, 0]
     y_crotch, y_neck = 0.47 * H, 0.87 * H
@@ -83,17 +87,17 @@ def build(m, voxel=0.005):
         a, b = torso_axes(y)
         f = np.sqrt((x / a) ** 2 + (z / b) ** 2)
         d_xz = (f - 1.0) * np.minimum(a, b)
-        d_torso = np.maximum.reduce([d_xz, y - y_neck, (y_crotch - 0.02) - y])
+        d_torso = np.maximum.reduce([d_xz, y - y_neck, 0.40 * H - y])
         d = d_torso
         # glutes / pelvis fullness
         d = smin(d, ellipsoid(P, (0, 0.52 * H, -0.015), (hip_a * 0.98, 0.075 * H, axes[1, 1] * 1.05)), 0.05)
         # legs
         r_thigh = math.sqrt(hip_a * axes[0, 1]) * 0.60
         for s in (-1, 1):
-            hipj = (s * hip_a * 0.5, y_crotch + 0.02, 0.0)
+            hipj = (s * hip_a * 0.52, y_crotch + 0.06, 0.0)
             knee = (s * (hip_a * 0.5 + 0.015), 0.28 * H, 0.012)
             ankle = (s * (hip_a * 0.5 + 0.03), 0.045, 0.0)
-            d = smin(d, capsule(P, hipj, knee, r_thigh, r_thigh * 0.62), 0.06)
+            d = smin(d, capsule(P, hipj, knee, r_thigh * 1.08, r_thigh * 0.62), 0.09)
             d = smin(d, capsule(P, knee, ankle, r_thigh * 0.62, 0.036), 0.05)
             d = smin(d, ellipsoid(P, (s * (hip_a * 0.5 + 0.03), 0.04, 0.06), (0.045, 0.04, 0.13)), 0.03)  # foot
         # arms: shoulder cap, upper arm, forearm, hand

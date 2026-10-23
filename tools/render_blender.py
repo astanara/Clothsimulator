@@ -141,8 +141,8 @@ def studio(center, height):
     bpy.context.scene.world = world
     world.use_nodes = True
     bg = world.node_tree.nodes["Background"]
-    bg.inputs["Color"].default_value = (0.86, 0.85, 0.83, 1)
-    bg.inputs["Strength"].default_value = 0.55
+    bg.inputs["Color"].default_value = (0.9, 0.89, 0.87, 1)
+    bg.inputs["Strength"].default_value = 0.9
     # seamless floor
     bpy.ops.mesh.primitive_plane_add(size=40, location=(center.x, center.y, 0))
     floor = bpy.context.object
@@ -151,6 +151,7 @@ def studio(center, height):
     set_input(fp, ["Base Color"], (0.86, 0.85, 0.83, 1))
     set_input(fp, ["Roughness"], 0.9)
     floor.data.materials.append(fm)
+    floor.is_shadow_catcher = True  # the floor shows only shadows, over the seamless backdrop
 
     def area(name, loc, size, power, color=(1, 1, 1)):
         bpy.ops.object.light_add(type="AREA", location=loc)
@@ -163,21 +164,22 @@ def studio(center, height):
         l.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
     d = height * 2.2
-    area("key", (-d * 0.8, -d, height * 1.4), height * 1.2, 900 * height, (1.0, 0.97, 0.93))
-    area("fill", (d * 1.1, -d * 0.6, height * 0.9), height * 1.8, 260 * height, (0.92, 0.95, 1.0))
-    area("rim", (d * 0.2, d * 1.1, height * 1.5), height * 1.0, 700 * height)
+    area("key", (-d * 0.8, -d, height * 1.4), height * 1.2, 380 * height, (1.0, 0.97, 0.93))
+    area("fill", (d * 1.1, -d * 0.6, height * 0.9), height * 1.8, 120 * height, (0.92, 0.95, 1.0))
+    area("rim", (d * 0.2, d * 1.1, height * 1.5), height * 1.0, 260 * height)
 
 
 def add_camera(center, height, az_deg, name="cam", lens=85):
     az = math.radians(az_deg)
     cam_data = bpy.data.cameras.new(name)
     cam_data.lens = lens
-    cam_data.sensor_width = 36
+    cam_data.sensor_fit = "VERTICAL"
+    cam_data.sensor_height = 36
     cam = bpy.data.objects.new(name, cam_data)
     bpy.context.collection.objects.link(cam)
     # field of view for a full-height portrait with some air around
-    vfov = 2 * math.atan((36 * (bpy.context.scene.render.resolution_y / bpy.context.scene.render.resolution_x)) / (2 * lens))
-    dist = (height * 1.18 / 2) / math.tan(vfov / 2)
+    vfov = 2 * math.atan(36 / (2 * lens))
+    dist = (height * 1.22 / 2) / math.tan(vfov / 2)
     target = Vector((center.x, center.y, height * 0.52))
     # the body faces -Y in Blender, so az=0 is the front view
     cam.location = target + Vector((math.sin(az) * dist, -math.cos(az) * dist, 0))
@@ -238,7 +240,7 @@ def main():
     scene.render.resolution_y = a.res
     scene.render.resolution_x = int(a.res * 0.7)
     scene.render.image_settings.file_format = "PNG"
-    scene.view_settings.view_transform = "AgX" if "AgX" in [x.identifier for x in scene.view_settings.bl_rna.properties["view_transform"].enum_items] else "Filmic"
+    scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
     studio(center, height)
     os.makedirs(a.out, exist_ok=True)
