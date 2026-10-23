@@ -42,6 +42,7 @@ def parse():
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "gpu"])
     ap.add_argument("--turntable", type=int, default=0, help="frames for a 360 degree turntable")
     ap.add_argument("--exposure", type=float, default=0.0, help="exposure compensation in stops")
+    ap.add_argument("--body-subdiv", type=int, default=1, help="subdivision levels for the body (smooths a ~10k vertex SMPL-X mesh)")
     ap.add_argument("--no-fit-pass", action="store_true", help="skip the final push-out of garment vertices from the body")
     ap.add_argument("--save-blend", action="store_true")
     return ap.parse_args(argv)
@@ -208,6 +209,10 @@ def main():
             o.data.materials.clear()
             o.data.materials.append(skin)
             body_objs.append(o)
+            if a.body_subdiv:
+                m = o.modifiers.new("smooth", "SUBSURF")
+                m.levels = a.body_subdiv
+                m.render_levels = a.body_subdiv
         else:
             garment_objs.append(o)
         bpy.context.view_layer.objects.active = o

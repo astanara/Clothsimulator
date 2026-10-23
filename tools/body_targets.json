@@ -1,0 +1,8 @@
+{
+  "_note": "Tape measurements (cm) and torso widths/depths (cm) read from the front/side photos with tools/photo_targets.py. No photos are stored.",
+  "height_cm": 177,
+  "tape_cm": { "chest": 96.5, "waist": 80, "hip": 94 },
+  "width_cm": { "chest": 34.7, "waist": 31.0, "hip": 38.1 },
+  "depth_cm": { "chest": 24.4, "waist": 19.3, "hip": 22.7 },
+  "shoulder_cm": 42
+}

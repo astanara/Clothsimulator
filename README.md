@@ -45,6 +45,15 @@ Tools live in `tools/`. Python needs `numpy scipy scikit-image`; rendering needs
    (or `python tools/render_blender.py ...` with the `bpy` module). The GPU is chosen automatically: OptiX/CUDA on NVIDIA RTX, Metal on Apple silicon, else CPU. Options: `--views front,three_quarter,side,back`, `--turntable 60`, `--finish leather|satin|denim|knit|matte`, `--exposure`, `--save-blend`.
    A final fit pass subdivides the garment once and keeps it a few millimetres above the body, which removes most places where the coarse simulation mesh cuts through the body.
 
+### Fitted SMPL-X body (Mac or PC)
+`tools/fit_body.py` replaces the generated mannequin with a fitted SMPL-X body (anatomically realistic). It needs only `numpy scipy`; the model file comes from you because of its licence (research / personal use):
+1. Register at https://smpl-x.is.tue.mpg.de/ , download *SMPL-X* (`models_smplx_v1_1.zip`) and put `SMPLX_NEUTRAL.npz` in `models/smplx/` (git-ignored).
+2. Optional, to re-read your photos: `python tools/photo_targets.py --front front.jpg --side side.jpg --height 177 --chest 96.5 --waist 80 --hip 94` (needs `pillow mediapipe`; photos in a sports bra + leggings, see its `--help`). The committed `tools/body_targets.json` already holds your numbers.
+3. `python tools/fit_body.py --model models/smplx/SMPLX_NEUTRAL.npz --targets tools/body_targets.json --out body_smplx.obj`
+   It fits the shape in the T-pose to your tape measurements plus the torso widths/depths from the photos, prints the achieved girths, and exports the body standing with the arms lowered 35 degrees.
+4. In the app: *Load body scan...* -> `body_smplx.obj`, add the garment, *Quality: High*, *Download GLB*, then render as above. On a Mac with the Blender app: `/Applications/Blender.app/Contents/MacOS/Blender -b -P tools/render_blender.py -- --model cloth-on-body.glb --out renders --res 2048 --samples 256` (Metal GPU is used automatically).
+Tests for the fitter (with a stand-in model): `python tools/test_fit_body.py`.
+
 See `docs/PC_RENDER_PLAN.md` for the plan to replace the mannequin with a fitted statistical body model (SMPL-X) and for mobile viewing.
 
 ## Limitations / roadmap
