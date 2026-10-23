@@ -72,8 +72,8 @@ def build(m, voxel=0.005):
         a = np.interp(fk, fr, axes[:, 0])
         b = np.interp(fk, fr, axes[:, 1])
         # below the hips the pelvis tapers into the thighs (no ledge where legs start)
-        t = np.interp(y / H, [0.38, 0.45, 0.52], [0.52, 0.84, 1.0])
-        tb = np.interp(y / H, [0.38, 0.45, 0.52], [0.7, 0.9, 1.0])
+        t = np.interp(y / H, [0.40, 0.46, 0.52], [0.60, 0.86, 1.0])
+        tb = np.interp(y / H, [0.40, 0.46, 0.52], [0.72, 0.92, 1.0])
         return a * t, b * tb
 
     hip_a = axes[0, 0]
@@ -87,12 +87,12 @@ def build(m, voxel=0.005):
         a, b = torso_axes(y)
         f = np.sqrt((x / a) ** 2 + (z / b) ** 2)
         d_xz = (f - 1.0) * np.minimum(a, b)
-        d_torso = np.maximum.reduce([d_xz, y - y_neck, 0.40 * H - y])
+        d_torso = np.maximum.reduce([d_xz, y - y_neck, 0.42 * H - y])
         d = d_torso
         # glutes / pelvis fullness
         d = smin(d, ellipsoid(P, (0, 0.52 * H, -0.015), (hip_a * 0.98, 0.075 * H, axes[1, 1] * 1.05)), 0.05)
         # legs
-        r_thigh = math.sqrt(hip_a * axes[0, 1]) * 0.60
+        r_thigh = hip_a * 0.47
         for s in (-1, 1):
             hipj = (s * hip_a * 0.52, y_crotch + 0.06, 0.0)
             knee = (s * (hip_a * 0.5 + 0.015), 0.28 * H, 0.012)
