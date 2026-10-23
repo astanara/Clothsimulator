@@ -482,8 +482,17 @@ async function exportPNG() {
 }
 
 async function exportGLB() {
+  // named so tools/render_blender.py can give the body a skin shader and keep the garment's textures
   const root = new THREE.Group();
-  for (const o of [clothMesh, bodyObj, scanObj]) if (o) root.add(o.clone());
+  const add = (o: THREE.Object3D | null, name: string) => {
+    if (!o) return;
+    const c = o.clone();
+    c.name = name;
+    root.add(c);
+  };
+  add(clothMesh, 'garment');
+  add(strapMesh, 'garment_straps');
+  add(scanObj ?? bodyObj, 'body');
   const buf = (await new GLTFExporter().parseAsync(root, { binary: true })) as ArrayBuffer;
   download(URL.createObjectURL(new Blob([buf], { type: 'model/gltf-binary' })), 'cloth-on-body.glb');
 }
