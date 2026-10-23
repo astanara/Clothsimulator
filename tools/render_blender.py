@@ -41,6 +41,7 @@ def parse():
     ap.add_argument("--finish", default="auto", choices=["auto", "none"] + list(FINISHES))
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "gpu"])
     ap.add_argument("--turntable", type=int, default=0, help="frames for a 360 degree turntable")
+    ap.add_argument("--exposure", type=float, default=0.0, help="exposure compensation in stops")
     ap.add_argument("--save-blend", action="store_true")
     return ap.parse_args(argv)
 
@@ -142,7 +143,7 @@ def studio(center, height):
     world.use_nodes = True
     bg = world.node_tree.nodes["Background"]
     bg.inputs["Color"].default_value = (0.9, 0.89, 0.87, 1)
-    bg.inputs["Strength"].default_value = 0.9
+    bg.inputs["Strength"].default_value = 0.6
     # seamless floor
     bpy.ops.mesh.primitive_plane_add(size=40, location=(center.x, center.y, 0))
     floor = bpy.context.object
@@ -164,9 +165,9 @@ def studio(center, height):
         l.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
     d = height * 2.2
-    area("key", (-d * 0.8, -d, height * 1.4), height * 1.2, 380 * height, (1.0, 0.97, 0.93))
-    area("fill", (d * 1.1, -d * 0.6, height * 0.9), height * 1.8, 120 * height, (0.92, 0.95, 1.0))
-    area("rim", (d * 0.2, d * 1.1, height * 1.5), height * 1.0, 260 * height)
+    area("key", (-d * 0.8, -d, height * 1.4), height * 1.2, 110 * height, (1.0, 0.97, 0.93))
+    area("fill", (d * 1.1, -d * 0.6, height * 0.9), height * 1.8, 40 * height, (0.92, 0.95, 1.0))
+    area("rim", (d * 0.2, d * 1.1, height * 1.5), height * 1.0, 80 * height)
 
 
 def add_camera(center, height, az_deg, name="cam", lens=85):
@@ -242,6 +243,7 @@ def main():
     scene.render.image_settings.file_format = "PNG"
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
+    scene.view_settings.exposure = a.exposure
     studio(center, height)
     os.makedirs(a.out, exist_ok=True)
     print(f"render device: {dev}; height {height:.2f} m; objects: {[o.name for o in objs]}")
